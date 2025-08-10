@@ -1,0 +1,6 @@
+setup (windows-friendly)
+pip install streamlit openai python-dotenv
+create a .env file next to the script:
+OPENAI_API_KEY=sk-...
+run
+streamlit run app.py
