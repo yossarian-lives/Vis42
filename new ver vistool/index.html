@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Visibility Tool</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .analysis-form {
+            background: white;
+            border-radius: 20px;
+            padding: 2rem;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #374151;
+        }
+
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .competitors-input {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .competitor-tag {
+            background: #f3f4f6;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            padding: 0.25rem 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            font-size: 0.875rem;
+        }
+
+        .competitor-tag button {
+            background: none;
+            border: none;
+            color: #6b7280;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        .providers-group {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .provider-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .analyze-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            border-radius: 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+            width: 100%;
+        }
+
+        .analyze-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .analyze-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+            background: white;
+            border-radius: 20px;
+            padding: 2rem;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+        }
+
+        .results.show {
+            display: block;
+        }
+
+        .score-card {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .score-gauge {
+            position: relative;
+            width: 200px;
+            height: 100px;
+            margin: 0 auto 1rem;
+        }
+
+        .gauge-bg {
+            width: 200px;
+            height: 100px;
+            background: conic-gradient(from 180deg, #ef4444 0deg, #f97316 72deg, #eab308 144deg, #22c55e 180deg);
+            border-radius: 100px 100px 0 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .gauge-bg::after {
+            content: '';
+            position: absolute;
+            width: 160px;
+            height: 80px;
+            background: white;
+            border-radius: 80px 80px 0 0;
+            top: 20px;
+            left: 20px;
+        }
+
+        .gauge-needle {
+            position: absolute;
+            width: 2px;
+            height: 80px;
+            background: #333;
+            left: 50%;
+            bottom: 0;
+            transform-origin: bottom;
+            transform: translateX(-50%) rotate(0deg);
+            transition: transform 0.8s ease-out;
+        }
+
+        .gauge-needle::before {
+            content: '';
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background: #333;
+            border-radius: 50%;
+            bottom: -5px;
+            left: -4px;
+        }
+
+        .score-value {
+            font-size: 3rem;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+
+        .score-label {
+            font-size: 1.2rem;
+            color: #6b7280;
+        }
+
+        .subscores-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .subscore-card {
+            background: #f9fafb;
+            border-radius: 10px;
+            padding: 1.5rem;
+            text-align: center;
+        }
+
+        .subscore-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #374151;
+            margin-bottom: 0.5rem;
+        }
+
+        .subscore-label {
+            font-size: 0.875rem;
+            color: #6b7280;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .key-findings {
+            margin-bottom: 2rem;
+        }
+
+        .findings-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .finding-chip {
+            background: #dbeafe;
+            color: #1e40af;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .finding-chip.positive {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .finding-chip.negative {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .providers-section {
+            margin-top: 2rem;
+        }
+
+        .provider-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }
+
+        .provider-header {
+            background: #f9fafb;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .provider-header h3 {
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+
+        .provider-score {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .provider-details {
+            padding: 1rem;
+            display: none;
+        }
+
+        .provider-details.show {
+            display: block;
+        }
+
+        .provider-subscores {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .provider-subscore {
+            text-align: center;
+        }
+
+        .provider-subscore-value {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .provider-subscore-label {
+            font-size: 0.75rem;
+            color: #6b7280;
+            text-transform: uppercase;
+        }
+
+        .json-toggle {
+            background: #f3f4f6;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            padding: 0.5rem 1rem;
+            font-size: 0.875rem;
+            cursor: pointer;
+            margin-top: 1rem;
+        }
+
+        .json-content {
+            background: #1f2937;
+            color: #f9fafb;
+            padding: 1rem;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.875rem;
+            overflow-x: auto;
+            margin-top: 0.5rem;
+            display: none;
+        }
+
+        .json-content.show {
+            display: block;
+        }
+
+        .actions {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-top: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            background: white;
+            border: 2px solid #667eea;
+            color: #667eea;
+            padding: 0.75rem 1.5rem;
+            border-radius: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .action-btn:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: #1f2937;
+            color: white;
+            padding: 1rem 1.5rem;
+            border-radius: 10px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            transform: translateX(100%);
+            transition: transform 0.3s;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .error-message {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+            padding: 1rem;
+            border-radius: 10px;
+            margin: 1rem 0;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .subscores-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .actions {
+                flex-direction: column;
+            }
+            
+            .action-btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>LLM Visibility Tool</h1>
+            <p>Measure how visible your brand is across major AI models</p>
+        </div>
+
+        <form class="analysis-form" id="analysisForm">
+            <div class="form-group">
+                <label for="entity">Entity Name *</label>
+                <input type="text" id="entity" name="entity" placeholder="e.g., Tesla, OpenAI, McDonald's" required>
+            </div>
+
+            <div class="form-group">
+                <label for="category">Category (Optional)</label>
+                <input type="text" id="category" name="category" placeholder="e.g., Electric Vehicles, AI, Fast Food">
+            </div>
+
+            <div class="form-group">
+                <label>Competitors (Optional)</label>
+                <div class="competitors-input" id="competitorsInput"></div>
+                <input type="text" id="competitorInput" placeholder="Add competitor and press Enter">
+            </div>
+
+            <div class="form-group">
+                <label>LLM Providers</label>
+                <div class="providers-group">
+                    <div class="provider-checkbox">
+                        <input type="checkbox" id="openai" name="providers" value="openai" checked>
+                        <label for="openai">OpenAI (ChatGPT)</label>
+                    </div>
+                    <div class="provider-checkbox">
+                        <input type="checkbox" id="anthropic" name="providers" value="anthropic" checked>
+                        <label for="anthropic">Anthropic (Claude)</label>
+                    </div>
+                    <div class="provider-checkbox">
+                        <input type="checkbox" id="gemini" name="providers" value="gemini" checked>
+                        <label for="gemini">Google (Gemini)</label>
+                    </div>
+                </div>
+            </div>
+
+            <button type="submit" class="analyze-btn" id="analyzeBtn">
+                Analyze Visibility
+            </button>
+        </form>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Analyzing visibility across LLM providers...</p>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <div class="results" id="results">
+            <div class="score-card">
+                <div class="score-gauge">
+                    <div class="gauge-bg">
+                        <div class="gauge-needle" id="gaugeNeedle"></div>
+                    </div>
+                </div>
+                <div class="score-value" id="scoreValue">--</div>
+                <div class="score-label">Visibility Score</div>
+            </div>
+
+            <div class="subscores-grid" id="subscoresGrid">
+                <!-- Subscores will be populated here -->
+            </div>
+
+            <div class="key-findings">
+                <h3>Key Findings</h3>
+                <div class="findings-chips" id="findingsChips">
+                    <!-- Findings will be populated here -->
+                </div>
+            </div>
+
+            <div class="providers-section">
+                <h3>Provider Breakdown</h3>
+                <div id="providersBreakdown">
+                    <!-- Provider details will be populated here -->
+                </div>
+            </div>
+
+            <div class="actions">
+                <button class="action-btn" onclick="exportToCSV()">Export CSV</button>
+                <button class="action-btn" onclick="printToPDF()">Print to PDF</button>
+                <button class="action-btn" onclick="copyShareLink()">Copy Share Link</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // Global state
+        let currentResults = null;
+        let competitors = [];
+        const API_BASE = window.location.hostname === 'localhost' ? 
+            'http://localhost:5051' : 
+            'https://your-api-domain.com'; // Replace with your actual API domain
+
+        // Initialize app
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeApp();
+            loadFromURL();
+            loadFromStorage();
+        });
+
+        function initializeApp() {
+            // Form submission
+            document.getElementById('analysisForm').addEventListener('submit', handleSubmit);
+            
+            // Competitor input
+            const competitorInput = document.getElementById('competitorInput');
+            competitorInput.addEventListener('keydown', handleCompetitorInput);
+            
+            // Entity input - submit on Enter
+            document.getElementById('entity').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    document.getElementById('analysisForm').dispatchEvent(new Event('submit'));
+                }
+            });
+        }
+
+        function handleCompetitorInput(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const input = e.target;
+                const competitor = input.value.trim();
+                
+                if (competitor && competitors.length < 10 && !competitors.includes(competitor)) {
+                    competitors.push(competitor);
+                    input.value = '';
+                    renderCompetitors();
+                }
+            }
+        }
+
+        function renderCompetitors() {
+            const container = document.getElementById('competitorsInput');
+            container.innerHTML = competitors.map((comp, index) => `
+                <div class="competitor-tag">
+                    ${comp}
+                    <button type="button" onclick="removeCompetitor(${index})">&times;</button>
+                </div>
+            `).join('');
+        }
+
+        function removeCompetitor(index) {
+            competitors.splice(index, 1);
+            renderCompetitors();
+        }
+
+        async function handleSubmit(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const entity = formData.get('entity').trim();
+            const category = formData.get('category').trim() || null;
+            const providers = Array.from(formData.getAll('providers'));
+            
+            if (!entity) {
+                showError('Entity name is required');
+                return;
+            }
+            
+            if (providers.length === 0) {
+                showError('At least one LLM provider must be selected');
+                return;
+            }
+
+            await analyzeEntity({
+                entity,
+                category,
+                competitors: [...competitors],
+                providers
+            });
+        }
+
+        async function analyzeEntity(request) {
+            showLoading(true);
+            hideError();
+            hideResults();
+
+            try {
+                const response = await fetch(`${API_BASE}/api/visibility`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(request)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const results = await response.json();
+                currentResults = results;
+                
+                displayResults(results);
+                saveToStorage(request, results);
+                updateURL(request);
+                
+            } catch (error) {
+                console.error('Analysis failed:', error);
+                showError(`Analysis failed: ${error.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function displayResults(results) {
+            // Update score gauge
+            const scoreValue = document.getElementById('scoreValue');
+            const gaugeNeedle = document.getElementById('gaugeNeedle');
+            
+            scoreValue.textContent = results.overall;
+            
+            // Animate gauge needle (0-180 degrees for 0-100 score)
+            const angle = (results.overall / 100) * 180;
+            setTimeout(() => {
+                gaugeNeedle.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+            }, 100);
+
+            // Update subscores
+            displaySubscores(results.subscores);
+            
+            // Generate key findings
+            displayKeyFindings(results);
+            
+            // Display provider breakdown
+            displayProviders(results.providers);
+            
+            // Show results
+            showResults(true);
+        }
+
+        function displaySubscores(subscores) {
+            const grid = document.getElementById('subscoresGrid');
+            const subscoreData = [
+                { key: 'recognition', label: 'Recognition', value: subscores.recognition },
+                { key: 'detail', label: 'Detail', value: subscores.detail },
+                { key: 'context', label: 'Context', value: subscores.context },
+                { key: 'competitors', label: 'Competitors', value: subscores.competitors },
+                { key: 'consistency', label: 'Consistency', value: subscores.consistency }
+            ];
+
+            grid.innerHTML = subscoreData.map(item => `
+                <div class="subscore-card">
+                    <div class="subscore-value">${(item.value * 10).toFixed(1)}</div>
+                    <div class="subscore-label">${item.label}</div>
+                </div>
+            `).join('');
+        }
+
+        function displayKeyFindings(results) {
+            const findings = [];
+            const score = results.overall;
+            const subscores = results.subscores;
+
+            // Overall visibility assessment
+            if (score >= 80) {
+                findings.push({ text: "Excellent visibility across providers", type: "positive" });
+            } else if (score >= 60) {
+                findings.push({ text: "Good visibility with room for improvement", type: "" });
+            } else if (score >= 40) {
+                findings.push({ text: "Moderate visibility", type: "" });
+            } else {
+                findings.push({ text: "Low visibility - needs attention", type: "negative" });
+            }
+
+            // Context ranking insights
+            const hasGoodRanking = results.providers.some(p => 
+                p.probes.context && p.probes.context.rank_of_entity && p.probes.context.rank_of_entity <= 3
+            );
+            if (hasGoodRanking) {
+                findings.push({ text: "Ranks in top 3 across some providers", type: "positive" });
+            }
+
+            // Recognition insights
+            if (subscores.recognition >= 0.8) {
+                findings.push({ text: "Highly recognized by LLMs", type: "positive" });
+            } else if (subscores.recognition < 0.3) {
+                findings.push({ text: "Low recognition - needs more context", type: "negative" });
+            }
+
+            // Consistency insights
+            if (subscores.consistency >= 0.8) {
+                findings.push({ text: "Consistent results across probes", type: "positive" });
+            } else if (subscores.consistency < 0.5) {
+                findings.push({ text: "Inconsistent results", type: "negative" });
+            }
+
+            // Provider variance
+            if (results.notes.some(note => note.includes("variance"))) {
+                findings.push({ text: "High variance between providers", type: "negative" });
+            }
+
+            // Competitive positioning
+            if (subscores.competitors >= 0.7) {
+                findings.push({ text: "Good competitive context", type: "positive" });
+            }
+
+            const container = document.getElementById('findingsChips');
+            container.innerHTML = findings.map(finding => `
+                <div class="finding-chip ${finding.type}">${finding.text}</div>
+            `).join('');
+        }
+
+        function displayProviders(providers) {
+            const container = document.getElementById('providersBreakdown');
+            
+            container.innerHTML = providers.map((provider, index) => `
+                <div class="provider-card">
+                    <div class="provider-header" onclick="toggleProvider(${index})">
+                        <div>
+                            <h3>${provider.provider.toUpperCase()}</h3>
+                            ${provider.model ? `<small style="color: #6b7280;">${provider.model}</small>` : ''}
+                        </div>
+                        <div class="provider-score">${provider.overall}</div>
+                    </div>
+                    <div class="provider-details" id="provider-${index}">
+                        <div class="provider-subscores">
+                            <div class="provider-subscore">
+                                <div class="provider-subscore-value">${(provider.subscores.recognition * 10).toFixed(1)}</div>
+                                <div class="provider-subscore-label">Recognition</div>
+                            </div>
+                            <div class="provider-subscore">
+                                <div class="provider-subscore-value">${(provider.subscores.detail * 10).toFixed(1)}</div>
+                                <div class="provider-subscore-label">Detail</div>
+                            </div>
+                            <div class="provider-subscore">
+                                <div class="provider-subscore-value">${(provider.subscores.context * 10).toFixed(1)}</div>
+                                <div class="provider-subscore-label">Context</div>
+                            </div>
+                            <div class="provider-subscore">
+                                <div class="provider-subscore-value">${(provider.subscores.competitors * 10).toFixed(1)}</div>
+                                <div class="provider-subscore-label">Competitors</div>
+                            </div>
+                            <div class="provider-subscore">
+                                <div class="provider-subscore-value">${(provider.subscores.consistency * 10).toFixed(1)}</div>
+                                <div class="provider-subscore-label">Consistency</div>
+                            </div>
+                        </div>
+                        ${displayContextRank(provider.probes.context)}
+                        <button class="json-toggle" onclick="toggleJSON(${index})">
+                            Show Raw JSON
+                        </button>
+                        <div class="json-content" id="json-${index}">
+                            <pre>${JSON.stringify(provider.probes, null, 2)}</pre>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function displayContextRank(context) {
+            if (context && context.rank_of_entity && context.top_list) {
+                return `
+                    <div style="margin: 1rem 0; padding: 1rem; background: #f9fafb; border-radius: 8px;">
+                        <strong>Ranking Context:</strong> #${context.rank_of_entity} in top 10 list<br>
+                        <small style="color: #6b7280;">Top list: ${context.top_list.join(', ')}</small>
+                    </div>
+                `;
+            }
+            return '';
+        }
+
+        function toggleProvider(index) {
+            const details = document.getElementById(`provider-${index}`);
+            details.classList.toggle('show');
+        }
+
+        function toggleJSON(index) {
+            const content = document.getElementById(`json-${index}`);
+            content.classList.toggle('show');
+        }
+
+        // Utility functions
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('show', show);
+            document.getElementById('analyzeBtn').disabled = show;
+        }
+
+        function showResults(show) {
+            document.getElementById('results').classList.toggle('show', show);
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').classList.remove('show');
+        }
+
+        function hideResults() {
+            document.getElementById('results').classList.remove('show');
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // Export functions
+        function exportToCSV() {
+            if (!currentResults) return;
+
+            const headers = ['Entity', 'Category', 'Overall Score', 'Recognition', 'Detail', 'Context', 'Competitors', 'Consistency', 'Date'];
+            const data = [
+                currentResults.entity,
+                currentResults.category || '',
+                currentResults.overall,
+                (currentResults.subscores.recognition * 10).toFixed(1),
+                (currentResults.subscores.detail * 10).toFixed(1),
+                (currentResults.subscores.context * 10).toFixed(1),
+                (currentResults.subscores.competitors * 10).toFixed(1),
+                (currentResults.subscores.consistency * 10).toFixed(1),
+                new Date().toISOString().split('T')[0]
+            ];
+
+            // Add provider data
+            currentResults.providers.forEach(provider => {
+                headers.push(`${provider.provider.toUpperCase()} Score`);
+                data.push(provider.overall);
+            });
+
+            const csvContent = [headers.join(','), data.join(',')].join('\n');
+            downloadFile(csvContent, `${currentResults.entity}-visibility-analysis.csv`, 'text/csv');
+        }
+
+        function printToPDF() {
+            window.print();
+        }
+
+        function copyShareLink() {
+            if (!currentResults) return;
+
+            const params = new URLSearchParams({
+                entity: currentResults.entity,
+                category: currentResults.category || '',
+                competitors: competitors.join(','),
+                providers: currentResults.providers.map(p => p.provider).join(',')
+            });
+
+            const shareUrl = `${window.location.origin}${window.location.pathname}?${params}`;
+            
+            navigator.clipboard.writeText(shareUrl).then(() => {
+                showToast('Share link copied to clipboard!');
+            }).catch(() => {
+                showToast('Unable to copy link');
+            });
+        }
+
+        function downloadFile(content, filename, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // URL and storage management
+        function loadFromURL() {
+            const params = new URLSearchParams(window.location.search);
+            const entity = params.get('entity');
+            
+            if (entity) {
+                document.getElementById('entity').value = entity;
+                document.getElementById('category').value = params.get('category') || '';
+                
+                const competitorsParam = params.get('competitors');
+                if (competitorsParam) {
+                    competitors = competitorsParam.split(',').filter(c => c.trim());
+                    renderCompetitors();
+                }
+
+                const providersParam = params.get('providers');
+                if (providersParam) {
+                    const selectedProviders = providersParam.split(',');
+                    document.querySelectorAll('input[name="providers"]').forEach(input => {
+                        input.checked = selectedProviders.includes(input.value);
+                    });
+                }
+
+                // Auto-run analysis if all required fields are present
+                setTimeout(() => {
+                    document.getElementById('analysisForm').dispatchEvent(new Event('submit'));
+                }, 100);
+            }
+        }
+
+        function updateURL(request) {
+            const params = new URLSearchParams({
+                entity: request.entity,
+                ...(request.category && { category: request.category }),
+                ...(request.competitors.length > 0 && { competitors: request.competitors.join(',') }),
+                providers: request.providers.join(',')
+            });
+
+            const newUrl = `${window.location.pathname}?${params}`;
+            window.history.pushState({}, '', newUrl);
+        }
+
+        function saveToStorage(request, results) {
+            const data = {
+                request,
+                results,
+                timestamp: Date.now()
+            };
+            localStorage.setItem('llm-visibility-last-run', JSON.stringify(data));
+        }
+
+        function loadFromStorage() {
+            try {
+                const stored = localStorage.getItem('llm-visibility-last-run');
+                if (stored && !window.location.search) {
+                    const data = JSON.parse(stored);
+                    const age = Date.now() - data.timestamp;
+                    
+                    // Only restore if less than 1 hour old
+                    if (age < 3600000) {
+                        document.getElementById('entity').value = data.request.entity;
+                        document.getElementById('category').value = data.request.category || '';
+                        competitors = [...(data.request.competitors || [])];
+                        renderCompetitors();
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load from storage:', e);
+            }
+        }
+    </script>
+</body>
+</html>

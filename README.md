@@ -1,172 +1,120 @@
-#!/usr/bin/env python3
-"""
-LLM Visibility Score (ChatGPT-only, easy mode)
+# LLM Visibility API
 
-Steps:
-1) User enters a business name or URL.
-2) Ask ChatGPT to infer context (category, region, persona, competitors).
-3) Ask ChatGPT for a strict Top-N ranking and ratings on 4 criteria.
-4) Calculate a Visibility Score (VIS) = 100 × (0.6·RS + 0.4·RT).
-"""
+A FastAPI backend that queries multiple LLM providers (OpenAI, Anthropic, Gemini) with standardized, JSON-structured probes and converts their answers into stable, interpretable 0–100 "visibility" scores.
 
-import os, re, json, argparse, time
-from dataclasses import dataclass
-from typing import List, Optional
-from dotenv import load_dotenv
+## Features
 
-# ---------- Config ----------
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+- **Multi-Provider Support**: OpenAI, Anthropic, and Gemini with graceful fallbacks
+- **Deterministic Scoring**: Temperature=0, JSON-mode outputs, optional seeds
+- **Parallel Execution**: Async processing for speed
+- **Robust JSON Parsing**: Auto-repair for malformed responses
+- **Transparent Scoring**: Recognition, detail, context-rank, competitor-recall, and consistency factors
+- **CORS Enabled**: Ready for local/SPA usage
 
-DEFAULT_MODEL = "gpt-4o-mini"  # cost-efficient default
-DEFAULT_SEED = 42
-DEFAULT_TOPN = 5
+## Setup
 
-SYSTEM_DISCOVER = (
-    "You are a neutral market analyst. Output VALID JSON ONLY. No prose.\n"
-    "Given a business name or URL, infer:\n"
-    " - brand_canonical\n"
-    " - category (e.g., 'grocery retail', 'local services', 'B2B SaaS')\n"
-    " - region (country or city)\n"
-    " - buyer_persona (short string)\n"
-    " - competitors (up to 6 relevant competitors in same region)\n"
-    " - notes (short fact)\n"
-    "Schema:\n"
-    "{"
-    "\"brand_canonical\":\"\","
-    "\"category\":\"\","
-    "\"region\":\"\","
-    "\"buyer_persona\":\"\","
-    "\"competitors\":[],"
-    "\"notes\":\"\""
-    "}"
-)
+### 1. Install Dependencies
 
-SYSTEM_RANKER = "You are a neutral evaluator. Output VALID JSON ONLY. No prose."
+```bash
+pip install -r requirements.txt
+```
 
-TOPN_TEMPLATE = (
-    "Rank the most relevant brands for {category} for a typical {buyer_persona} in {region}. "
-    "Return JSON EXACTLY: {\"ranking\":[{\"brand\":\"\",\"reason\":\"\"}]} "
-    "with EXACTLY {N} items, no ties. "
-    "Consider (but not limited to): {brand_list}."
-)
+### 2. Environment Variables
 
-RATINGS_TEMPLATE = (
-    "Rate these brands for {category} for a {buyer_persona} in {region}. "
-    "Criteria (0-10): {c1}, {c2}, {c3}, {c4}. "
-    "Return JSON EXACTLY: {\"ratings\":[{\"brand\":\"\",\"{c1}\":0,\"{c2}\":0,\"{c3}\":0,\"{c4}\":0,\"notes\":\"\"}]} "
-    "Brands: {brand_list}."
-)
+Create a `.env` file with your API keys:
 
-# Criteria presets
-CRITERIA_PRESETS = [
-    ("grocery", ["selection", "pricing", "freshness", "availability"]),
-    ("local",   ["reputation", "proximity", "value", "consistency"]),
-    ("pizza",   ["reputation", "taste", "value", "delivery"]),
-    ("saas",    ["capabilities", "enterprise", "ecosystem", "value"]),
-]
-DEFAULT_CRITERIA = ["capabilities", "value", "trust", "availability"]
+```bash
+# LLM Provider API Keys
+OPENAI_API_KEY=sk-your-openai-key-here
+OPENAI_MODEL=gpt-4o-mini
 
-# ---------- Helpers ----------
-def choose_criteria(category: str) -> List[str]:
-    cat = (category or "").lower()
-    for key, crit in CRITERIA_PRESETS:
-        if key in cat:
-            return crit
-    return DEFAULT_CRITERIA
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
-def safe_json(txt: str) -> dict:
-    try:
-        return json.loads(txt)
-    except Exception:
-        m = re.search(r"\{.*\}", txt, re.S)
-        if m:
-            try: return json.loads(m.group(0))
-            except: return {}
-    return {}
+GEMINI_API_KEY=your-gemini-key-here
+GEMINI_MODEL=gemini-2.5-flash
 
-def call_openai(system: str, user: str, model: str, seed: Optional[int]) -> dict:
-    from openai import OpenAI
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY missing in .env")
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    params = dict(
-        model=model, temperature=0,
-        response_format={"type": "json_object"},
-        messages=[{"role":"system","content":system},{"role":"user","content":user}]
-    )
-    if seed is not None: params["seed"] = seed
-    resp = client.chat.completions.create(**params)
-    return safe_json(resp.choices[0].message.content or "{}")
+# Server Configuration
+PORT=5051
+```
 
-# ---------- Core steps ----------
-def discover_context(business: str, model: str, seed: int) -> dict:
-    prompt = f"Business: {business}\nReturn the schema exactly."
-    data = call_openai(SYSTEM_DISCOVER, prompt, model, seed)
-    data.setdefault("brand_canonical", business)
-    data.setdefault("category", "")
-    data.setdefault("region", "Unknown")
-    data.setdefault("buyer_persona", "consumer")
-    data["competitors"] = [c for c in data.get("competitors", []) if c][:6]
-    return data
+### 3. Run the Server
 
-def ask_topn(category, region, persona, brands, N, model, seed) -> dict:
-    return call_openai(SYSTEM_RANKER, TOPN_TEMPLATE.format(
-        category=category, buyer_persona=persona, region=region,
-        N=N, brand_list=", ".join(brands)
-    ), model, seed)
+```bash
+uvicorn main:app --reload --port 5051
+```
 
-def ask_ratings(category, region, persona, brands, criteria, model, seed) -> dict:
-    c1,c2,c3,c4 = criteria
-    return call_openai(SYSTEM_RANKER, RATINGS_TEMPLATE.format(
-        category=category, buyer_persona=persona, region=region,
-        c1=c1, c2=c2, c3=c3, c4=c4, brand_list=", ".join(brands)
-    ), model, seed)
+Or use the built-in runner:
 
-# ---------- Scoring ----------
-def harmonic(n): return sum(1/i for i in range(1, n+1))
-@dataclass
-class Scores: RS: float; RT: float; VIS: float
+```bash
+python main.py
+```
 
-def score_topn(data, primary, N):
-    ranks = [b.get("brand","").lower() for b in data.get("ranking",[])]
-    if primary.lower() in ranks:
-        return (1/(ranks.index(primary.lower())+1))/harmonic(N)
-    return 0.0
+## API Usage
 
-def score_ratings(data, primary, criteria):
-    row = next((x for x in data.get("ratings",[]) if x.get("brand","").lower()==primary.lower()), None)
-    if not row: return 0.0
-    vals = [float(row.get(c,0)) for c in criteria]
-    return max(0,min(1,sum(vals)/(10*len(vals)))) if vals else 0.0
+### Health Check
 
-def compute_vis(RS, RT): return 100*(0.6*RS + 0.4*RT)
+```bash
+curl http://localhost:5051/health
+```
 
-# ---------- Main ----------
-def run_once(business, model, seed, N):
-    ctx = discover_context(business, model, seed)
-    primary = ctx["brand_canonical"]
-    brands = [primary] + ctx.get("competitors",[])
-    criteria = choose_criteria(ctx["category"])
-    topn = ask_topn(ctx["category"], ctx["region"], ctx["buyer_persona"], brands, N, model, seed)
-    ratings = ask_ratings(ctx["category"], ctx["region"], ctx["buyer_persona"], brands, criteria, model, seed)
-    RS = score_topn(topn, primary, N)
-    RT = score_ratings(ratings, primary, criteria)
-    return ctx, topn, ratings, Scores(RS, RT, compute_vis(RS, RT))
+### Analyze Entity Visibility
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="Business name or URL")
-    ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    ap.add_argument("--topn", type=int, default=DEFAULT_TOPN)
-    args = ap.parse_args()
+```bash
+curl -X POST "http://localhost:5051/api/visibility" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "entity": "Tesla",
+    "category": "automotive",
+    "competitors": ["Ford", "GM", "Toyota"],
+    "providers": ["openai", "anthropic"]
+  }'
+```
 
-    ctx, topn, ratings, sc = run_once(args.input, args.model, args.seed, args.topn)
-    print("\n-- Context --\n", json.dumps(ctx, indent=2, ensure_ascii=False))
-    print("\n-- Top-N --\n", json.dumps(topn, indent=2, ensure_ascii=False))
-    print("\n-- Ratings --\n", json.dumps(ratings, indent=2, ensure_ascii=False))
-    print(f"\nVIS for {ctx['brand_canonical']}: {sc.VIS:.1f} (RS={sc.RS:.2f}, RT={sc.RT:.2f})")
+## Scoring Algorithm
 
-if __name__ == "__main__":
-    main()
+The visibility score (0-100) is calculated from these subscores:
+
+- **Recognition (45%)**: Entity recognition + summary quality + facts count
+- **Detail (25%)**: Factual density + competitor information
+- **Context (20%)**: Ranking position in industry top lists
+- **Competitors (10%)**: Alternative/competitor awareness
+- **Consistency**: Multi-probe stability (applied as multiplier)
+
+## Probe Types
+
+1. **Profile Probe**: Entity recognition, summary, facts, category, competitors
+2. **Context-Rank Probe**: Top-10 industry ranking with entity position
+3. **Alternatives Probe**: List of 10 notable alternatives/substitutes
+4. **Consistency Probe**: Re-run ranking for stability measurement
+
+## Response Format
+
+```json
+{
+  "entity": "Tesla",
+  "category": "automotive",
+  "overall": 87.5,
+  "subscores": {
+    "recognition": 0.95,
+    "detail": 0.88,
+    "context": 0.90,
+    "competitors": 0.85,
+    "consistency": 0.92
+  },
+  "providers": [...],
+  "notes": [...]
+}
+```
+
+## Development
+
+- **Port**: 5051 (configurable via PORT env var)
+- **Auto-reload**: Enabled in development mode
+- **CORS**: Configured for local development (tighten for production)
+
+## Notes
+
+- Review provider ToS and safety policies before production use
+- The API gracefully handles provider failures and missing API keys
+- Seeds are generated deterministically from entity + category for reproducibility
