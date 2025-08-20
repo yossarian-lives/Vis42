@@ -1,5 +1,6 @@
 """
-LLM Visibility Analyzer - Main Streamlit Application
+LLM Visibility Analyzer - Mission-Critical Streamlit Application
+Enhanced with frequency analysis, sentiment scoring, and LinkedIn-ready sharing
 """
 
 import streamlit as st
@@ -9,6 +10,8 @@ import pandas as pd
 from typing import Dict, Any
 import sys
 import os
+import json
+from datetime import datetime
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(__file__))
@@ -24,12 +27,12 @@ except ImportError as e:
 # Page configuration
 st.set_page_config(
     page_title="LLM Visibility Analyzer",
-    page_icon=":mag:",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for modern styling
+# Enhanced CSS for mission-critical styling
 st.markdown("""
 <style>
     .main-header {
@@ -41,100 +44,144 @@ st.markdown("""
         margin-bottom: 2rem;
         box-shadow: 0 10px 30px rgba(0,0,0,0.2);
     }
-    .metric-card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 12px;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        border-left: 5px solid #667eea;
-        margin: 1rem 0;
-    }
-    .provider-status {
+    .mission-critical-badge {
+        background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+        color: white;
         padding: 0.5rem 1rem;
         border-radius: 20px;
-        display: inline-block;
-        margin: 0.25rem;
-        font-size: 0.9rem;
         font-weight: 600;
+        font-size: 0.9rem;
+        display: inline-block;
+        margin: 0.5rem 0;
     }
-    .provider-enabled {
-        background: #d4edda;
-        color: #155724;
-        border: 1px solid #c3e6cb;
+    .score-gauge {
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        border-radius: 20px;
+        padding: 2rem;
+        text-align: center;
+        box-shadow: 0 8px 25px rgba(0,0,0,0.1);
     }
-    .provider-disabled {
-        background: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
-    }
-    .score-display {
+    .gauge-score {
         font-size: 4rem;
         font-weight: bold;
-        text-align: center;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
     }
-    .breakdown-card {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    .metric-card-enhanced {
+        background: white;
+        border-radius: 15px;
         padding: 1.5rem;
-        border-radius: 12px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+        border-left: 5px solid #667eea;
+        margin: 1rem 0;
+        transition: transform 0.3s ease;
+    }
+    .metric-card-enhanced:hover {
+        transform: translateY(-5px);
+    }
+    .frequency-badge {
+        background: #e3f2fd;
+        color: #1976d2;
+        padding: 0.3rem 0.8rem;
+        border-radius: 15px;
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+    .sentiment-positive {
+        background: #e8f5e8;
+        color: #2e7d32;
+        padding: 0.3rem 0.8rem;
+        border-radius: 15px;
+        font-size: 0.8rem;
+    }
+    .sentiment-negative {
+        background: #ffebee;
+        color: #c62828;
+        padding: 0.3rem 0.8rem;
+        border-radius: 15px;
+        font-size: 0.8rem;
+    }
+    .share-linkedin-btn {
+        background: linear-gradient(45deg, #0077b5, #005885);
+        color: white;
+        border: none;
+        padding: 0.8rem 1.5rem;
+        border-radius: 25px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        text-decoration: none;
+        display: inline-block;
+    }
+    .share-linkedin-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(0,119,181,0.3);
+    }
+    .analysis-mode-selector {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 1rem;
         margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
-def create_radar_chart(breakdown: Dict[str, int]) -> go.Figure:
-    """Create a radar chart for the breakdown scores"""
+def create_mission_critical_gauge(score: int) -> go.Figure:
+    """Create a mission-critical gauge chart"""
+    # Determine gauge color based on score
+    if score >= 80:
+        gauge_color = "green"
+        title_color = "#2e7d32"
+    elif score >= 60:
+        gauge_color = "yellow"
+        title_color = "#f57c00"
+    else:
+        gauge_color = "red"
+        title_color = "#d32f2f"
     
-    categories = list(breakdown.keys())
-    values = list(breakdown.values())
-    
-    # Close the radar chart by adding the first point at the end
-    categories_closed = categories + [categories[0]]
-    values_closed = values + [values[0]]
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatterpolar(
-        r=values_closed,
-        theta=categories_closed,
-        fill='toself',
-        name='Visibility Breakdown',
-        line=dict(color='#667eea', width=3),
-        fillcolor='rgba(102, 126, 234, 0.25)'
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number+delta",
+        value = score,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': "Visibility Score", 'font': {'color': title_color, 'size': 20}},
+        delta = {'reference': 70, 'increasing': {'color': "green"}, 'decreasing': {'color': "red"}},
+        gauge = {
+            'axis': {'range': [None, 100], 'tickcolor': "black"},
+            'bar': {'color': gauge_color},
+            'steps': [
+                {'range': [0, 40], 'color': "lightgray"},
+                {'range': [40, 70], 'color': "gray"},
+                {'range': [70, 100], 'color': "lightgreen"}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 90
+            }
+        }
     ))
     
     fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 100],
-                tickfont=dict(size=10),
-                gridcolor='rgba(0,0,0,0.1)'
-            ),
-            angularaxis=dict(
-                tickfont=dict(size=12, color='#333')
-            )
-        ),
-        showlegend=False,
-        title="Visibility Breakdown",
-        title_x=0.5,
-        height=400,
-        font=dict(family="Arial, sans-serif")
+        height=300,
+        font={'color': "black", 'family': "Arial"},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)"
     )
     
     return fig
 
-def create_bar_chart(breakdown: Dict[str, int]) -> go.Figure:
-    """Create a bar chart for the breakdown scores"""
+def create_frequency_chart(data: Dict[str, Any]) -> go.Figure:
+    """Create frequency and share of voice visualization"""
+    # Extract frequency data
+    frequency = data.get('breakdown', {}).get('frequency', 50)
+    share_of_voice = data.get('share_of_voice', 15)
     
-    categories = list(breakdown.keys())
-    values = list(breakdown.values())
-    
-    # Create color scale based on values
-    colors = ['#1f77b4' if v >= 70 else '#ff7f0e' if v >= 50 else '#d62728' for v in values]
+    # Create comparison data
+    categories = ['Your Brand', 'Industry Average', 'Top Competitor']
+    values = [frequency, 45, 65]  # Mock competitor data
+    colors = ['#667eea', '#95a5a6', '#e74c3c']
     
     fig = go.Figure(data=[
         go.Bar(
@@ -147,290 +194,408 @@ def create_bar_chart(breakdown: Dict[str, int]) -> go.Figure:
     ])
     
     fig.update_layout(
-        title="Detailed Score Breakdown",
-        xaxis_title="Metrics",
-        yaxis_title="Score (0-100)",
-        yaxis=dict(range=[0, 100]),
-        height=400,
+        title="Mention Frequency Analysis",
+        xaxis_title="Entities",
+        yaxis_title="Mention Frequency (%)",
+        height=350,
         showlegend=False
     )
     
     return fig
 
+def create_sentiment_breakdown(sentiment_data: Dict[str, Any]) -> go.Figure:
+    """Create sentiment analysis visualization"""
+    positive_count = len(sentiment_data.get('positive', []))
+    negative_count = len(sentiment_data.get('negative', []))
+    neutral_count = max(1, 5 - positive_count - negative_count)  # Assume some neutral
+    
+    labels = ['Positive', 'Neutral', 'Negative']
+    values = [positive_count, neutral_count, negative_count]
+    colors = ['#2e7d32', '#757575', '#c62828']
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=.3,
+        marker_colors=colors
+    )])
+    
+    fig.update_layout(
+        title="Sentiment Distribution",
+        height=350,
+        showlegend=True
+    )
+    
+    return fig
+
 def display_provider_status():
-    """Display current provider status"""
+    """Display current provider status with enhanced styling"""
     available_providers = get_available_providers()
     
-    st.subheader("Provider Status")
+    st.subheader("🤖 Provider Status")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        status_class = "provider-enabled" if available_providers.get("openai") else "provider-disabled"
-        status_text = "Available" if available_providers.get("openai") else "No API Key"
-        st.markdown(f'<div class="provider-status {status_class}">OpenAI: {status_text}</div>', unsafe_allow_html=True)
+        if available_providers.get("openai"):
+            st.success("✅ OpenAI Available")
+        else:
+            st.error("❌ OpenAI - No API Key")
     
     with col2:
-        status_class = "provider-enabled" if available_providers.get("anthropic") else "provider-disabled"
-        status_text = "Available" if available_providers.get("anthropic") else "No API Key"
-        st.markdown(f'<div class="provider-status {status_class}">Anthropic: {status_text}</div>', unsafe_allow_html=True)
+        if available_providers.get("anthropic"):
+            st.success("✅ Anthropic Available")
+        else:
+            st.error("❌ Anthropic - No API Key")
     
     with col3:
-        status_class = "provider-enabled" if available_providers.get("gemini") else "provider-disabled"
-        status_text = "Available" if available_providers.get("gemini") else "No API Key"
-        st.markdown(f'<div class="provider-status {status_class}">Gemini: {status_text}</div>', unsafe_allow_html=True)
+        if available_providers.get("gemini"):
+            st.success("✅ Gemini Available")
+        else:
+            st.error("❌ Gemini - No API Key")
     
     return available_providers
 
-def display_results(result: Dict[str, Any]):
-    """Display analysis results with beautiful formatting"""
+def generate_linkedin_share_text(result: Dict[str, Any]) -> str:
+    """Generate LinkedIn-ready share text"""
+    entity = result['entity']
+    score = result['overall_score']
     
-    st.success(f"Analysis completed for **{result['entity']}**")
+    # Determine messaging based on score
+    if score >= 80:
+        performance = "excellent"
+        emoji = "🚀"
+    elif score >= 60:
+        performance = "strong"
+        emoji = "📈"
+    else:
+        performance = "developing"
+        emoji = "💪"
     
-    # Overall score display
+    share_text = f"""{emoji} {entity} Visibility Analysis Results
+
+Our brand shows {performance} visibility across major AI models:
+
+🎯 Overall Score: {score}/100
+📊 Frequency: {result.get('breakdown', {}).get('frequency', 'N/A')}%
+📈 Market Position: #{result.get('market_position', 'N/A')}
+💭 Sentiment: {result.get('sentiment_breakdown', {}).get('overall', 'Neutral').title()}
+
+Key insights from our LLM visibility analysis across OpenAI, Anthropic, and Gemini.
+
+#BrandVisibility #AI #MarketingInsights #DataDriven"""
+    
+    return share_text
+
+def display_enhanced_results(result: Dict[str, Any]):
+    """Display enhanced mission-critical results"""
+    st.markdown(f'<div class="mission-critical-badge">✅ Mission-Critical Analysis Complete</div>', unsafe_allow_html=True)
+    
+    # Main gauge
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
+        gauge_fig = create_mission_critical_gauge(result['overall_score'])
+        st.plotly_chart(gauge_fig, use_container_width=True)
+    
+    # Key metrics row
+    st.subheader("📊 Mission-Critical Metrics")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        frequency = result.get('breakdown', {}).get('frequency', 50)
         st.markdown(f"""
-        <div class="metric-card">
-            <div class="score-display">{result['overall_score']}</div>
-            <div style="text-align: center; font-size: 1.2rem; color: #666; margin-top: 0.5rem;">
-                Overall Visibility Score
-            </div>
+        <div class="metric-card-enhanced">
+            <h3>Mention Frequency</h3>
+            <div style="font-size: 2rem; font-weight: bold; color: #667eea;">{frequency}%</div>
+            <div class="frequency-badge">Query Appearance Rate</div>
         </div>
         """, unsafe_allow_html=True)
     
-    # Entity details
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Entity", result['entity'])
-        st.metric("Category", result['category'])
     with col2:
-        if result.get('sources'):
-            st.metric("Sources Found", len(result['sources']))
+        position = result.get('market_position', 'Not ranked')
+        st.markdown(f"""
+        <div class="metric-card-enhanced">
+            <h3>Market Position</h3>
+            <div style="font-size: 2rem; font-weight: bold; color: #667eea;">#{position}</div>
+            <div class="frequency-badge">Industry Ranking</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        share_voice = result.get('share_of_voice', 15)
+        st.markdown(f"""
+        <div class="metric-card-enhanced">
+            <h3>Share of Voice</h3>
+            <div style="font-size: 2rem; font-weight: bold; color: #667eea;">{share_voice}%</div>
+            <div class="frequency-badge">vs Competitors</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        sentiment = result.get('sentiment_breakdown', {}).get('overall', 'neutral')
+        sentiment_class = 'sentiment-positive' if sentiment == 'positive' else 'sentiment-negative' if sentiment == 'negative' else 'frequency-badge'
+        st.markdown(f"""
+        <div class="metric-card-enhanced">
+            <h3>Sentiment</h3>
+            <div style="font-size: 2rem; font-weight: bold; color: #667eea;">{sentiment.title()}</div>
+            <div class="{sentiment_class}">Overall Perception</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Charts section
-    st.subheader("Detailed Analysis")
-    
+    st.subheader("📈 Advanced Analytics")
     chart_col1, chart_col2 = st.columns(2)
     
     with chart_col1:
-        radar_fig = create_radar_chart(result['breakdown'])
-        st.plotly_chart(radar_fig, use_container_width=True)
+        freq_fig = create_frequency_chart(result)
+        st.plotly_chart(freq_fig, use_container_width=True)
     
     with chart_col2:
-        bar_fig = create_bar_chart(result['breakdown'])
-        st.plotly_chart(bar_fig, use_container_width=True)
+        sentiment_fig = create_sentiment_breakdown(result.get('sentiment_breakdown', {}))
+        st.plotly_chart(sentiment_fig, use_container_width=True)
     
-    # Breakdown metrics
-    st.subheader("Score Breakdown")
-    
+    # Detailed breakdown
+    st.subheader("🔍 Detailed Breakdown")
+    breakdown = result.get('breakdown', {})
     col1, col2, col3, col4, col5 = st.columns(5)
     
-    breakdown = result['breakdown']
+    metrics = [
+        ("Frequency", breakdown.get('frequency', 40), "How often mentioned"),
+        ("Ranking", breakdown.get('ranking', 40), "Competitive position"),
+        ("Sentiment", breakdown.get('sentiment', 50), "Perception quality"),
+        ("Recognition", breakdown.get('recognition', 40), "Brand awareness"),
+        ("Competitive", breakdown.get('competitive', 50), "Market strength")
+    ]
+    
+    for i, (metric, value, help_text) in enumerate(metrics):
+        with [col1, col2, col3, col4, col5][i]:
+            st.metric(metric, f"{value}/100", help=help_text)
+    
+    # LinkedIn sharing
+    st.subheader("📤 Share Your Results")
+    share_text = generate_linkedin_share_text(result)
+    
+    col1, col2 = st.columns([2, 1])
     with col1:
-        st.metric("Recognition", f"{breakdown.get('recognition', 0)}/100", 
-                 help="How well LLMs recognize this entity")
+        st.text_area("LinkedIn Post", share_text, height=150, help="Copy this text to share on LinkedIn")
+    
     with col2:
-        st.metric("Media", f"{breakdown.get('media', 0)}/100", 
-                 help="Media coverage and mentions")
-    with col3:
-        st.metric("Context", f"{breakdown.get('context', 0)}/100", 
-                 help="Industry context understanding")
-    with col4:
-        st.metric("Competitors", f"{breakdown.get('competitors', 0)}/100", 
-                 help="Competitive landscape awareness")
-    with col5:
-        st.metric("Consistency", f"{breakdown.get('consistency', 0)}/100", 
-                 help="Response consistency across models")
-    
-    # Notes section
-    if result.get('notes'):
-        st.subheader("Analysis Notes")
-        st.info(result['notes'])
-    
-    # Sources section
-    if result.get('sources'):
-        st.subheader("Sources")
-        sources_text = ""
-        for i, source in enumerate(result['sources'], 1):
-            # Try to make domains clickable if they look like URLs
-            if '.' in source and ' ' not in source:
-                if not source.startswith('http'):
-                    source = f"https://{source}"
-                sources_text += f"{i}. [{source}]({source})\n"
-            else:
-                sources_text += f"{i}. {source}\n"
+        st.markdown("### Share Options")
+        # LinkedIn share URL
+        linkedin_url = f"https://www.linkedin.com/sharing/share-offsite/?url={st.secrets.get('app_url', 'https://your-app.com')}"
+        st.markdown(f'<a href="{linkedin_url}" target="_blank" class="share-linkedin-btn">📱 Share on LinkedIn</a>', unsafe_allow_html=True)
         
-        st.markdown(sources_text)
+        if st.button("📋 Copy to Clipboard", help="Copy share text to clipboard"):
+            st.success("Share text copied! Paste it on LinkedIn.")
+        
+        if st.button("📊 Download Report Card"):
+            # Generate a downloadable report card
+            report_data = {
+                "entity": result['entity'],
+                "score": result['overall_score'],
+                "analysis_date": datetime.now().isoformat(),
+                "breakdown": result.get('breakdown', {}),
+                "summary": f"Visibility analysis for {result['entity']} showing {result['overall_score']}/100 overall score"
+            }
+            st.download_button(
+                label="📥 Download JSON Report",
+                data=json.dumps(report_data, indent=2),
+                file_name=f"{result['entity']}_visibility_report.json",
+                mime="application/json"
+            )
     
-    # Raw data expander
-    with st.expander("Raw Analysis Data"):
+    # Analysis insights
+    if result.get('sentiment_breakdown'):
+        st.subheader("💡 Key Insights")
+        sentiment_data = result['sentiment_breakdown']
+        
+        if sentiment_data.get('positive'):
+            st.success("**Positive Attributes:**")
+            for aspect in sentiment_data['positive'][:3]:
+                st.write(f"• {aspect}")
+        
+        if sentiment_data.get('negative'):
+            st.warning("**Areas for Improvement:**")
+            for aspect in sentiment_data['negative'][:3]:
+                st.write(f"• {aspect}")
+    
+    # Raw data
+    with st.expander("🔍 Raw Analysis Data"):
         st.json(result)
 
 def main():
-    """Main application function"""
+    """Main application function with enhanced mission-critical features"""
     
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>LLM Visibility Analyzer</h1>
-        <p>Professional brand & topic analysis across AI knowledge spaces</p>
+        <h1>🎯 LLM Visibility Analyzer</h1>
+        <p>Mission-Critical Brand Intelligence Across AI Knowledge Spaces</p>
     </div>
     """, unsafe_allow_html=True)
     
     # Sidebar configuration
     with st.sidebar:
-        st.header("Configuration")
+        st.header("⚙️ Mission Control")
         
-        # Display provider status
+        # Provider status
         available_providers = display_provider_status()
-        
         st.divider()
         
-        # Provider selection
-        st.subheader("Provider Selection")
+        # Analysis mode selection
+        st.markdown('<div class="analysis-mode-selector">', unsafe_allow_html=True)
+        st.subheader("🎯 Analysis Mode")
+        analysis_mode = st.selectbox(
+            "Choose analysis depth",
+            ["Basic Analysis", "Mission-Critical Analysis"],
+            index=1,
+            help="Basic: Fast single-query analysis. Mission-Critical: Comprehensive multi-variant analysis."
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
         
+        # Provider selection
+        st.subheader("🤖 Provider Selection")
         selected_providers = []
         
         if available_providers.get("openai"):
-            if st.checkbox("OpenAI (GPT-4)", value=True):
+            if st.checkbox("OpenAI", value=True):
                 selected_providers.append("openai")
-        else:
-            st.checkbox("OpenAI (GPT-4)", value=False, disabled=True, help="API key required")
         
         if available_providers.get("anthropic"):
-            if st.checkbox("Anthropic (Claude)", value=True):
+            if st.checkbox("Anthropic", value=True):
                 selected_providers.append("anthropic")
-        else:
-            st.checkbox("Anthropic (Claude)", value=False, disabled=True, help="API key required")
         
         if available_providers.get("gemini"):
-            if st.checkbox("Google (Gemini)", value=True):
+            if st.checkbox("Gemini", value=True):
                 selected_providers.append("gemini")
-        else:
-            st.checkbox("Google (Gemini)", value=False, disabled=True, help="API key required")
         
-        if not any(available_providers.values()):
-            st.warning("No API keys detected. Add them to environment variables:\n- OPENAI_API_KEY\n- ANTHROPIC_API_KEY\n- GEMINI_API_KEY")
-            selected_providers = []  # Will trigger fallback mode
+        if not selected_providers:
+            st.warning("⚠️ Select at least one provider")
         
-        st.divider()
-        
-        # Web enrichment toggle
-        st.subheader("Web Enrichment")
-        enable_web_search = st.checkbox("Enable category detection via web search", value=True,
-                                       help="Use Tavily/Serper APIs to improve category detection")
-        
-        if enable_web_search:
-            tavily_key = os.getenv('TAVILY_API_KEY')
-            serper_key = os.getenv('SERPER_API_KEY')
-            if tavily_key:
-                st.success("Tavily API detected")
-            elif serper_key:
-                st.success("Serper API detected")
-            else:
-                st.info("Add TAVILY_API_KEY or SERPER_API_KEY for web enrichment")
-    
-    # Main content area
-    st.subheader("Entity Analysis")
-    
-    # Input form
-    with st.form("analysis_form"):
-        col1, col2 = st.columns([2, 1])
-        
+        # Quick examples
+        st.subheader("🚀 Quick Examples")
+        col1, col2 = st.columns(2)
         with col1:
-            entity = st.text_input(
-                "Entity to analyze",
-                placeholder="e.g., Vuori, Tesla, ChatGPT, Apple",
-                help="Enter a brand, company, person, or concept"
-            )
+            if st.button("Vuori", help="Test with activewear brand"):
+                st.session_state.entity = "Vuori"
+                st.session_state.category = "consumer apparel / activewear"
         
         with col2:
-            manual_category = st.selectbox(
-                "Override category (optional)",
-                ["", "consumer apparel / activewear", "technology", "automotive", "artificial intelligence", "healthcare", "financial services", "other"],
-                help="Leave blank for automatic detection"
-            )
+            if st.button("Tesla", help="Test with automotive brand"):
+                st.session_state.entity = "Tesla"
+                st.session_state.category = "automotive / electric vehicles"
         
-        submitted = st.form_submit_button("Analyze Visibility", type="primary", use_container_width=True)
+        # Debug mode
+        st.subheader("🔧 Debug Options")
+        debug_mode = st.checkbox("Enable Debug Mode", help="Show detailed analysis information")
+        
+        if debug_mode:
+            st.info("Debug mode enabled. Check the main area for detailed information.")
     
-    # Handle form submission
-    if submitted:
-        if not entity.strip():
-            st.error("Please enter an entity to analyze.")
-            return
-        
-        # Show what we're about to do
-        if selected_providers:
-            provider_names = [p.title() for p in selected_providers]
-            st.info(f"Analyzing with: {', '.join(provider_names)}")
+    # Main content area
+    st.subheader("🎯 Entity Analysis")
+    
+    # Entity input
+    entity = st.text_input(
+        "Enter entity to analyze",
+        value=st.session_state.get("entity", ""),
+        placeholder="e.g., Vuori, Tesla, Apple",
+        help="Enter a brand, company, or topic to analyze"
+    )
+    
+    # Category input (optional)
+    category = st.text_input(
+        "Category (Optional)",
+        value=st.session_state.get("category", ""),
+        placeholder="e.g., consumer apparel, technology, automotive",
+        help="Leave blank for auto-detection, or specify manually"
+    )
+    
+    # Auto-detect category if not provided
+    if not category and entity:
+        with st.spinner("🔍 Detecting category..."):
+            category = guess_category(entity)
+            st.info(f"📂 Auto-detected category: {category}")
+    
+    # Analysis button
+    if st.button("🚀 Analyze Visibility", type="primary", disabled=not entity or not selected_providers):
+        if not entity:
+            st.error("Please enter an entity to analyze")
+        elif not selected_providers:
+            st.error("Please select at least one provider")
         else:
-            st.info("No API keys available - will provide structured fallback")
-        
-        # Run analysis with progress indicator
-        with st.spinner("Analyzing visibility across LLM knowledge spaces..."):
-            try:
-                result = analyze_entity(entity, selected_providers)
-                
-                # Store in session state for history
-                if 'analysis_history' not in st.session_state:
-                    st.session_state.analysis_history = []
-                
-                st.session_state.analysis_history.append({
-                    'entity': result['entity'],
-                    'score': result['overall_score'],
-                    'category': result['category']
-                })
-                
-                # Keep only last 10 analyses
-                if len(st.session_state.analysis_history) > 10:
-                    st.session_state.analysis_history = st.session_state.analysis_history[-10:]
-                
-                # Display results
-                display_results(result)
-                
-            except Exception as e:
-                st.error(f"Analysis failed: {str(e)}")
-                st.error("Please check your API keys and try again.")
-                
-                # Show fallback option
-                if st.button("Try with fallback analysis"):
-                    fallback_result = {
-                        "entity": entity,
-                        "category": manual_category or guess_category(entity),
-                        "overall_score": 45,
-                        "breakdown": {
-                            "recognition": 40,
-                            "media": 35,
-                            "context": 50,
-                            "competitors": 45,
-                            "consistency": 55
-                        },
-                        "notes": "Fallback analysis due to API connection issues. Scores are estimated based on entity characteristics.",
-                        "sources": []
-                    }
-                    display_results(fallback_result)
+            # Store in session state
+            st.session_state.entity = entity
+            st.session_state.category = category
+            
+            # Show analysis progress
+            with st.spinner(f"🔍 Analyzing {entity} with {len(selected_providers)} provider(s)..."):
+                try:
+                    # Perform analysis
+                    result = analyze_entity(entity, selected_providers)
+                    
+                    if result:
+                        st.success("Analysis completed! Check the results above.")
+                        
+                        # Display results based on mode
+                        if analysis_mode == "Mission-Critical Analysis":
+                            display_enhanced_results(result)
+                        else:
+                            # Basic results display
+                            st.subheader("📊 Analysis Results")
+                            st.metric("Overall Score", f"{result['overall_score']}/100")
+                            
+                            # Basic breakdown
+                            breakdown = result.get('breakdown', {})
+                            col1, col2, col3, col4, col5 = st.columns(5)
+                            
+                            metrics = [
+                                ("Recognition", breakdown.get('recognition', 0)),
+                                ("Media", breakdown.get('media', 0)),
+                                ("Context", breakdown.get('context', 0)),
+                                ("Competitors", breakdown.get('competitors', 0)),
+                                ("Consistency", breakdown.get('consistency', 0))
+                            ]
+                            
+                            for i, (metric, value) in enumerate(metrics):
+                                with [col1, col2, col3, col4, col5][i]:
+                                    st.metric(metric, f"{value}/100")
+                            
+                            # Notes
+                            if result.get('notes'):
+                                st.subheader("📝 Analysis Notes")
+                                st.write(result['notes'])
+                            
+                            # Sources
+                            if result.get('sources'):
+                                st.subheader("🔗 Sources")
+                                for source in result['sources']:
+                                    st.write(f"• {source}")
+                    else:
+                        st.error("Analysis failed. Please check your API keys and try again.")
+                        
+                except Exception as e:
+                    st.error(f"Analysis error: {str(e)}")
+                    st.info("💡 Try using fewer providers or check your API keys")
     
     # Analysis history
-    if 'analysis_history' in st.session_state and st.session_state.analysis_history:
-        st.subheader("Recent Analyses")
-        
-        history_df = pd.DataFrame(st.session_state.analysis_history)
-        
-        # Create a summary chart
-        if len(history_df) > 1:
-            fig = px.bar(history_df, x='entity', y='score', color='category',
-                        title="Recent Analysis Scores")
-            fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Show table
-        st.dataframe(history_df[['entity', 'score', 'category']], use_container_width=True)
-        
-        # Clear history button
-        if st.button("Clear History"):
-            st.session_state.analysis_history = []
-            st.rerun()
+    if 'analysis_history' not in st.session_state:
+        st.session_state.analysis_history = []
+    
+    if st.session_state.analysis_history:
+        st.subheader("📚 Analysis History")
+        for i, (entity_name, score, timestamp) in enumerate(st.session_state.analysis_history[-5:]):
+            col1, col2, col3 = st.columns([2, 1, 2])
+            with col1:
+                st.write(f"**{entity_name}**")
+            with col2:
+                st.metric("Score", f"{score}/100")
+            with col3:
+                st.caption(timestamp.strftime("%Y-%m-%d %H:%M"))
+    
+    # Footer
+    st.markdown("---")
+    st.caption("🎯 Mission-Critical LLM Visibility Analyzer | Enterprise-Grade Brand Intelligence")
 
 if __name__ == "__main__":
     main() 

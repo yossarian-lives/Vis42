@@ -1,11 +1,7 @@
-[global]
-# Disable email collection
-gatherUsageStats = false
-
 [server]
 # Server settings
 headless = true
-port = 8502
+port = 8501
 
 [browser]
 # Browser settings
