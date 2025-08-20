@@ -400,6 +400,15 @@ def main():
         unsafe_allow_html=True
     )
     
+    # Debug info (temporary - remove later)
+    if st.checkbox("🔍 Show Debug Info"):
+        st.write("**Debug Information:**")
+        st.write(f"- SIMULATION_MODE: {SIMULATION_MODE}")
+        st.write(f"- ENABLED providers: {list(ENABLED.keys())}")
+        st.write(f"- OpenAI key present: {'Yes' if 'OpenAI' in ENABLED else 'No'}")
+        if 'OpenAI' in ENABLED:
+            st.write(f"- OpenAI key starts with: {ENABLED['OpenAI'][:10]}...")
+    
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
