@@ -24,7 +24,7 @@ except ImportError as e:
 # Page configuration
 st.set_page_config(
     page_title="LLM Visibility Analyzer",
-    page_icon="🔍",
+    page_icon=":mag:",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -161,23 +161,23 @@ def display_provider_status():
     """Display current provider status"""
     available_providers = get_available_providers()
     
-    st.subheader("🤖 Provider Status")
+    st.subheader("Provider Status")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
         status_class = "provider-enabled" if available_providers.get("openai") else "provider-disabled"
-        status_text = "✅ Available" if available_providers.get("openai") else "❌ No API Key"
+        status_text = "Available" if available_providers.get("openai") else "No API Key"
         st.markdown(f'<div class="provider-status {status_class}">OpenAI: {status_text}</div>', unsafe_allow_html=True)
     
     with col2:
         status_class = "provider-enabled" if available_providers.get("anthropic") else "provider-disabled"
-        status_text = "✅ Available" if available_providers.get("anthropic") else "❌ No API Key"
+        status_text = "Available" if available_providers.get("anthropic") else "No API Key"
         st.markdown(f'<div class="provider-status {status_class}">Anthropic: {status_text}</div>', unsafe_allow_html=True)
     
     with col3:
         status_class = "provider-enabled" if available_providers.get("gemini") else "provider-disabled"
-        status_text = "✅ Available" if available_providers.get("gemini") else "❌ No API Key"
+        status_text = "Available" if available_providers.get("gemini") else "No API Key"
         st.markdown(f'<div class="provider-status {status_class}">Gemini: {status_text}</div>', unsafe_allow_html=True)
     
     return available_providers
@@ -185,7 +185,7 @@ def display_provider_status():
 def display_results(result: Dict[str, Any]):
     """Display analysis results with beautiful formatting"""
     
-    st.success(f"✅ Analysis completed for **{result['entity']}**")
+    st.success(f"Analysis completed for **{result['entity']}**")
     
     # Overall score display
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -209,7 +209,7 @@ def display_results(result: Dict[str, Any]):
             st.metric("Sources Found", len(result['sources']))
     
     # Charts section
-    st.subheader("📊 Detailed Analysis")
+    st.subheader("Detailed Analysis")
     
     chart_col1, chart_col2 = st.columns(2)
     
@@ -222,7 +222,7 @@ def display_results(result: Dict[str, Any]):
         st.plotly_chart(bar_fig, use_container_width=True)
     
     # Breakdown metrics
-    st.subheader("📈 Score Breakdown")
+    st.subheader("Score Breakdown")
     
     col1, col2, col3, col4, col5 = st.columns(5)
     
@@ -245,12 +245,12 @@ def display_results(result: Dict[str, Any]):
     
     # Notes section
     if result.get('notes'):
-        st.subheader("📝 Analysis Notes")
+        st.subheader("Analysis Notes")
         st.info(result['notes'])
     
     # Sources section
     if result.get('sources'):
-        st.subheader("🔗 Sources")
+        st.subheader("Sources")
         sources_text = ""
         for i, source in enumerate(result['sources'], 1):
             # Try to make domains clickable if they look like URLs
@@ -264,7 +264,7 @@ def display_results(result: Dict[str, Any]):
         st.markdown(sources_text)
     
     # Raw data expander
-    with st.expander("🔍 Raw Analysis Data"):
+    with st.expander("Raw Analysis Data"):
         st.json(result)
 
 def main():
@@ -273,14 +273,14 @@ def main():
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>🔍 LLM Visibility Analyzer</h1>
+        <h1>LLM Visibility Analyzer</h1>
         <p>Professional brand & topic analysis across AI knowledge spaces</p>
     </div>
     """, unsafe_allow_html=True)
     
     # Sidebar configuration
     with st.sidebar:
-        st.header("⚙️ Configuration")
+        st.header("Configuration")
         
         # Display provider status
         available_providers = display_provider_status()
@@ -288,7 +288,7 @@ def main():
         st.divider()
         
         # Provider selection
-        st.subheader("🎯 Provider Selection")
+        st.subheader("Provider Selection")
         
         selected_providers = []
         
@@ -311,13 +311,13 @@ def main():
             st.checkbox("Google (Gemini)", value=False, disabled=True, help="API key required")
         
         if not any(available_providers.values()):
-            st.warning("⚠️ No API keys detected. Add them to environment variables:\n- OPENAI_API_KEY\n- ANTHROPIC_API_KEY\n- GEMINI_API_KEY")
+            st.warning("No API keys detected. Add them to environment variables:\n- OPENAI_API_KEY\n- ANTHROPIC_API_KEY\n- GEMINI_API_KEY")
             selected_providers = []  # Will trigger fallback mode
         
         st.divider()
         
         # Web enrichment toggle
-        st.subheader("🌐 Web Enrichment")
+        st.subheader("Web Enrichment")
         enable_web_search = st.checkbox("Enable category detection via web search", value=True,
                                        help="Use Tavily/Serper APIs to improve category detection")
         
@@ -325,14 +325,14 @@ def main():
             tavily_key = os.getenv('TAVILY_API_KEY')
             serper_key = os.getenv('SERPER_API_KEY')
             if tavily_key:
-                st.success("✅ Tavily API detected")
+                st.success("Tavily API detected")
             elif serper_key:
-                st.success("✅ Serper API detected")
+                st.success("Serper API detected")
             else:
-                st.info("ℹ️ Add TAVILY_API_KEY or SERPER_API_KEY for web enrichment")
+                st.info("Add TAVILY_API_KEY or SERPER_API_KEY for web enrichment")
     
     # Main content area
-    st.subheader("🎯 Entity Analysis")
+    st.subheader("Entity Analysis")
     
     # Input form
     with st.form("analysis_form"):
@@ -352,7 +352,7 @@ def main():
                 help="Leave blank for automatic detection"
             )
         
-        submitted = st.form_submit_button("🚀 Analyze Visibility", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("Analyze Visibility", type="primary", use_container_width=True)
     
     # Handle form submission
     if submitted:
@@ -363,12 +363,12 @@ def main():
         # Show what we're about to do
         if selected_providers:
             provider_names = [p.title() for p in selected_providers]
-            st.info(f"🔍 Analyzing with: {', '.join(provider_names)}")
+            st.info(f"Analyzing with: {', '.join(provider_names)}")
         else:
-            st.info("🔍 No API keys available - will provide structured fallback")
+            st.info("No API keys available - will provide structured fallback")
         
         # Run analysis with progress indicator
-        with st.spinner("🔍 Analyzing visibility across LLM knowledge spaces..."):
+        with st.spinner("Analyzing visibility across LLM knowledge spaces..."):
             try:
                 result = analyze_entity(entity, selected_providers)
                 
@@ -394,7 +394,7 @@ def main():
                 st.error("Please check your API keys and try again.")
                 
                 # Show fallback option
-                if st.button("🔄 Try with fallback analysis"):
+                if st.button("Try with fallback analysis"):
                     fallback_result = {
                         "entity": entity,
                         "category": manual_category or guess_category(entity),
@@ -413,7 +413,7 @@ def main():
     
     # Analysis history
     if 'analysis_history' in st.session_state and st.session_state.analysis_history:
-        st.subheader("📚 Recent Analyses")
+        st.subheader("Recent Analyses")
         
         history_df = pd.DataFrame(st.session_state.analysis_history)
         
@@ -428,7 +428,7 @@ def main():
         st.dataframe(history_df[['entity', 'score', 'category']], use_container_width=True)
         
         # Clear history button
-        if st.button("🗑️ Clear History"):
+        if st.button("Clear History"):
             st.session_state.analysis_history = []
             st.rerun()
 
