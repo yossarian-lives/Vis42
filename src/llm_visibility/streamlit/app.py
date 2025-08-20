@@ -35,12 +35,25 @@ def _find_in_mapping(d: Mapping, name: str):
     return None
 
 def get_secret_or_env(name: str) -> str | None:
+    """Get secret from st.secrets (any nesting level) or fallback to environment variable"""
+    # First try direct access to st.secrets
+    try:
+        if hasattr(st, 'secrets') and name in st.secrets:
+            value = st.secrets[name]
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except Exception:
+        pass
+    
+    # Then try recursive search in nested secrets
     try:
         found = _find_in_mapping(st.secrets, name)
         if found: 
             return found
     except Exception:
         pass
+    
+    # Finally fallback to environment variable
     v = os.getenv(name)
     return v.strip() if isinstance(v, str) and v.strip() else None
 
