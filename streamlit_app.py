@@ -1,11 +1,138 @@
 import streamlit as st
-import requests
 import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import time
+import os
+import re
+import asyncio
+from typing import Any, Dict, List, Optional, Tuple
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+# Try to get API keys from Streamlit secrets (for cloud deployment)
+try:
+    import streamlit as st
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+    ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY"))
+    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+except:
+    # Fallback to environment variables
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Check if we have real API keys
+HAS_REAL_APIS = any([OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY])
+
+# ---------- Real LLM Provider Classes (when API keys available) ----------
+
+class OpenAIProvider:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        try:
+            from openai import OpenAI
+            self.client = OpenAI(api_key=api_key)
+            self.available = True
+        except ImportError:
+            self.available = False
+        except Exception:
+            self.available = False
+    
+    async def ask_json(self, prompt: str, entity: str) -> Optional[Dict[str, Any]]:
+        if not self.available:
+            return None
+            
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are an AI visibility analyst. Respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                max_tokens=1000
+            )
+            
+            content = response.choices[0].message.content
+            return try_parse_json(content)
+        except Exception as e:
+            st.error(f"OpenAI API Error: {str(e)}")
+            return None
+
+class AnthropicProvider:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        try:
+            import anthropic
+            self.client = anthropic.Anthropic(api_key=api_key)
+            self.available = True
+        except ImportError:
+            self.available = False
+        except Exception:
+            self.available = False
+    
+    async def ask_json(self, prompt: str, entity: str) -> Optional[Dict[str, Any]]:
+        if not self.available:
+            return None
+            
+        try:
+            response = self.client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1000,
+                temperature=0.1,
+                system="You are an AI visibility analyst. Respond with valid JSON only.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            content = response.content[0].text
+            return try_parse_json(content)
+        except Exception as e:
+            st.error(f"Anthropic API Error: {str(e)}")
+            return None
+
+class GeminiProvider:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            self.available = True
+        except ImportError:
+            self.available = False
+        except Exception:
+            self.available = False
+    
+    async def ask_json(self, prompt: str, entity: str) -> Optional[Dict[str, Any]]:
+        if not self.available:
+            return None
+            
+        try:
+            response = self.model.generate_content(
+                prompt + "\n\nRespond with valid JSON only.",
+                generation_config={"temperature": 0.1}
+            )
+            
+            content = response.text
+            return try_parse_json(content)
+        except Exception as e:
+            st.error(f"Gemini API Error: {str(e)}")
+            return None
+
+# Initialize providers if API keys are available
+providers = {}
+if OPENAI_API_KEY:
+    providers["openai"] = OpenAIProvider(OPENAI_API_KEY)
+if ANTHROPIC_API_KEY:
+    providers["anthropic"] = AnthropicProvider(ANTHROPIC_API_KEY)
+if GEMINI_API_KEY:
+    providers["gemini"] = GeminiProvider(GEMINI_API_KEY)
 
 # Page configuration
 st.set_page_config(
@@ -63,42 +190,242 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# API configuration
-API_BASE_URL = "http://localhost:5051"
+# ---------- LLM Analysis Logic (Direct Implementation) ----------
 
-def check_api_health():
-    """Check if the API is running"""
+def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
+    """Try to parse strict JSON. If it fails, attempt to repair by extracting the
+    first balanced-looking {...} block.
+    """
     try:
-        response = requests.get(f"{API_BASE_URL}/health", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
-
-def analyze_visibility(entity, category, providers):
-    """Analyze entity visibility using the API"""
-    try:
-        payload = {
-            "entity": entity,
-            "providers": providers
-        }
-        if category:
-            payload["category"] = category
-            
-        response = requests.post(
-            f"{API_BASE_URL}/api/visibility",
-            json=payload,
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"API Error: {response.status_code}")
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", text, re.S)
+    if m:
+        chunk = m.group(0)
+        try:
+            return json.loads(chunk)
+        except Exception:
             return None
+    return None
+
+def seed_from_string(s: str) -> int:
+    """Generate deterministic seed from string"""
+    h = 2166136261
+    for ch in s:
+        h = (h ^ ord(ch)) * 16777619 & 0xFFFFFFFF
+    return h
+
+def clamp01(x: float) -> float:
+    """Clamp value between 0 and 1"""
+    return 0.0 if x < 0 else (1.0 if x > 1 else x)
+
+def visibility_from_subscores(subscores: Dict[str, float]) -> float:
+    """Calculate overall visibility score from subscores"""
+    # Weights (tune as needed)
+    W_RECOG = 0.45
+    W_DETAIL = 0.25
+    W_CONTEXT = 0.20
+    W_COMP = 0.10
+    
+    base = (
+        W_RECOG * subscores['recognition']
+        + W_DETAIL * subscores['detail']
+        + W_CONTEXT * subscores['context']
+        + W_COMP * subscores['competitors']
+    )  # 0..1
+    
+    # mild consistency multiplier: 0.85..1.0
+    mult = 0.85 + 0.15 * clamp01(subscores['consistency'])
+    return round(100.0 * clamp01(base * mult), 1)
+
+def simulate_llm_analysis(entity: str, category: Optional[str] = None) -> Dict[str, Any]:
+    """Simulate LLM analysis with realistic scoring"""
+    # Generate deterministic but realistic scores based on entity
+    seed = seed_from_string(entity + "|" + (category or ""))
+    
+    # Simulate different entity types and their typical scores
+    entity_lower = entity.lower()
+    
+    # High visibility entities (well-known brands/people)
+    if any(name in entity_lower for name in ['tesla', 'apple', 'google', 'microsoft', 'amazon', 'netflix']):
+        base_recognition = 0.9
+        base_detail = 0.85
+        base_context = 0.8
+        base_competitors = 0.9
+        base_consistency = 0.85
+    # Medium visibility entities
+    elif any(name in entity_lower for name in ['startup', 'ai', 'machine learning', 'blockchain', 'crypto']):
+        base_recognition = 0.7
+        base_detail = 0.75
+        base_context = 0.7
+        base_competitors = 0.8
+        base_consistency = 0.75
+    # Lower visibility entities
+    else:
+        base_recognition = 0.5
+        base_detail = 0.6
+        base_context = 0.5
+        base_competitors = 0.6
+        base_consistency = 0.7
+    
+    # Add some variation based on seed
+    import random
+    random.seed(seed)
+    
+    subscores = {
+        'recognition': clamp01(base_recognition + random.uniform(-0.1, 0.1)),
+        'detail': clamp01(base_detail + random.uniform(-0.1, 0.1)),
+        'context': clamp01(base_context + random.uniform(-0.1, 0.1)),
+        'competitors': clamp01(base_competitors + random.uniform(-0.1, 0.1)),
+        'consistency': clamp01(base_consistency + random.uniform(-0.05, 0.05))
+    }
+    
+    overall = visibility_from_subscores(subscores)
+    
+    # Generate realistic analysis data
+    if 'tesla' in entity_lower:
+        summary = "Tesla is an American electric vehicle and clean energy company founded by Elon Musk. Known for innovative electric cars, battery energy storage, and solar products."
+        facts = [
+            "Founded in 2003 by Martin Eberhard and Marc Tarpenning",
+            "Elon Musk joined as chairman in 2004 and became CEO in 2008",
+            "First electric car was the Tesla Roadster (2008)",
+            "Model S launched in 2012, Model 3 in 2017",
+            "Pioneered over-the-air software updates for vehicles",
+            "Built Gigafactories for battery production",
+            "Market cap often exceeds traditional automakers",
+            "Developed Autopilot advanced driver-assistance system"
+        ]
+        competitors = ["Ford", "General Motors", "Nissan", "Rivian", "Lucid Motors", "Volkswagen", "BMW", "Hyundai"]
+        industry_rank = 10
+    elif 'apple' in entity_lower:
+        summary = "Apple Inc. is an American multinational technology company that designs, develops, and sells consumer electronics, computer software, and online services."
+        facts = [
+            "Founded in 1976 by Steve Jobs, Steve Wozniak, and Ronald Wayne",
+            "Headquartered in Cupertino, California",
+            "Revolutionized personal computing with Macintosh (1984)",
+            "Introduced iPhone in 2007, changing mobile industry",
+            "iPad launched in 2010, creating tablet market",
+            "Apple Watch debuted in 2015",
+            "One of world's most valuable companies",
+            "Known for premium design and user experience"
+        ]
+        competitors = ["Samsung", "Microsoft", "Google", "Amazon", "Sony", "Dell", "HP", "Lenovo"]
+        industry_rank = 1
+    else:
+        # Generic analysis for other entities
+        summary = f"{entity} is a notable entity in the {category or 'general'} space with varying levels of recognition across different knowledge bases."
+        facts = [
+            f"{entity} has established presence in the market",
+            "Multiple sources provide information about this entity",
+            "Industry recognition varies by region and sector",
+            "Competitive landscape includes several players",
+            "Technology and innovation play key roles"
+        ]
+        competitors = ["Competitor A", "Competitor B", "Competitor C", "Alternative 1", "Alternative 2"]
+        industry_rank = random.randint(5, 15)
+    
+    return {
+        "entity": entity,
+        "category": category or "auto-detected",
+        "overall": overall,
+        "subscores": subscores,
+        "summary": summary,
+        "facts": facts,
+        "competitors": competitors,
+        "industry_rank": industry_rank,
+        "providers": [
+            {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "overall": overall,
+                "subscores": subscores
+            }
+        ],
+        "notes": [
+            f"Analysis based on simulated LLM responses for {entity}",
+            "Scores reflect typical recognition patterns across major AI models"
+        ]
+    }
+
+def analyze_visibility(entity: str, category: Optional[str], providers: List[str]) -> Dict[str, Any]:
+    """Analyze entity visibility using real APIs or simulation"""
+    
+    # If we have real API keys and selected providers, use them
+    if HAS_REAL_APIS and any(p in providers for p in ["openai", "anthropic", "gemini"]):
+        return asyncio.run(analyze_with_real_apis(entity, category, providers))
+    else:
+        # Fallback to simulation
+        time.sleep(1)
+        return simulate_llm_analysis(entity, category)
+
+async def analyze_with_real_apis(entity: str, category: Optional[str], selected_providers: List[str]) -> Dict[str, Any]:
+    """Analyze using real LLM APIs"""
+    
+    # Create analysis prompt
+    prompt = f"""
+    Analyze the visibility of "{entity}" in the {category or 'general'} space.
+    
+    Provide a JSON response with this structure:
+    {{
+        "summary": "Brief description of the entity",
+        "facts": ["fact1", "fact2", "fact3"],
+        "competitors": ["competitor1", "competitor2"],
+        "industry_rank": 5,
+        "subscores": {{
+            "recognition": 0.85,
+            "detail": 0.75,
+            "context": 0.8,
+            "competitors": 0.9,
+            "consistency": 0.85
+        }}
+    }}
+    
+    Base scores on how well-known and detailed the information is about this entity.
+    """
+    
+    results = {}
+    provider_results = []
+    
+    # Query each selected provider
+    for provider_name in selected_providers:
+        if provider_name in providers:
+            provider = providers[provider_name]
+            result = await provider.ask_json(prompt, entity)
             
-    except requests.exceptions.RequestException as e:
-        st.error(f"Connection Error: {str(e)}")
-        return None
+            if result:
+                results[provider_name] = result
+                provider_results.append({
+                    "provider": provider_name,
+                    "model": provider_name,
+                    "overall": visibility_from_subscores(result.get("subscores", {})),
+                    "subscores": result.get("subscores", {})
+                })
+    
+    # If no real API results, fallback to simulation
+    if not results:
+        return simulate_llm_analysis(entity, category)
+    
+    # Combine results (for now, use first successful result as base)
+    first_result = list(results.values())[0]
+    
+    return {
+        "entity": entity,
+        "category": category or "auto-detected",
+        "overall": visibility_from_subscores(first_result.get("subscores", {})),
+        "subscores": first_result.get("subscores", {}),
+        "summary": first_result.get("summary", ""),
+        "facts": first_result.get("facts", []),
+        "competitors": first_result.get("competitors", []),
+        "industry_rank": first_result.get("industry_rank", 10),
+        "providers": provider_results,
+        "notes": [
+            f"Analysis using real LLM APIs: {', '.join(selected_providers)}",
+            "Scores based on actual AI model responses"
+        ]
+    }
+
+# ---------- Streamlit UI Functions ----------
 
 def create_radar_chart(data):
     """Create a radar chart for subscores"""
@@ -166,32 +493,38 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
-        # API Status
-        api_status = check_api_health()
-        if api_status:
-            st.success("✅ API Connected")
+        # Status indicator
+        if HAS_REAL_APIS:
+            st.success("✅ Real LLM APIs Available")
+            st.info(f"Connected to: {', '.join(providers.keys())}")
         else:
-            st.error("❌ API Not Available")
-            st.info("Make sure your API is running on port 5051")
-            return
+            st.warning("⚠️ Using Simulation Mode")
+            st.info("Add API keys to .streamlit/secrets.toml for real analysis")
         
         st.divider()
         
         # Provider Selection
         st.subheader("🤖 LLM Providers")
-        openai_enabled = st.checkbox("OpenAI (GPT-4o)", value=True)
-        anthropic_enabled = st.checkbox("Anthropic (Claude)")
-        gemini_enabled = st.checkbox("Google (Gemini)")
         
-        providers = []
-        if openai_enabled:
-            providers.append("openai")
-        if anthropic_enabled:
-            providers.append("anthropic")
-        if gemini_enabled:
-            providers.append("gemini")
+        if HAS_REAL_APIS:
+            # Real providers
+            openai_enabled = st.checkbox("OpenAI (GPT-4o)", value="openai" in providers)
+            anthropic_enabled = st.checkbox("Anthropic (Claude)", value="anthropic" in providers)
+            gemini_enabled = st.checkbox("Google (Gemini)", value="gemini" in providers)
             
-        if not providers:
+            providers_selected = []
+            if openai_enabled and "openai" in providers:
+                providers_selected.append("openai")
+            if anthropic_enabled and "anthropic" in providers:
+                providers_selected.append("anthropic")
+            if gemini_enabled and "gemini" in providers:
+                providers_selected.append("gemini")
+        else:
+            # Simulation mode
+            st.info("Simulation mode - all providers enabled")
+            providers_selected = ["openai", "anthropic", "gemini"]
+            
+        if not providers_selected:
             st.warning("Please select at least one provider")
             return
             
@@ -228,13 +561,13 @@ def main():
                 st.error("Please enter an entity to analyze")
                 return
                 
-            if not providers:
+            if not providers_selected:
                 st.error("Please select at least one LLM provider")
                 return
             
             # Show loading
             with st.spinner("🔍 Analyzing visibility across LLMs..."):
-                result = analyze_visibility(entity, category, providers)
+                result = analyze_visibility(entity, category, providers_selected)
                 
                 if result:
                     # Store in session state for recent analyses
@@ -250,7 +583,7 @@ def main():
                     # Display results
                     display_results(result)
                 else:
-                    st.error("Analysis failed. Please check your API connection and try again.")
+                    st.error("Analysis failed. Please try again.")
     
     with col2:
         st.subheader("📊 Quick Stats")
@@ -285,6 +618,16 @@ def display_results(data):
         </div>
         """, unsafe_allow_html=True)
     
+    # Summary and Facts
+    if data.get('summary'):
+        st.subheader("📝 Summary")
+        st.write(data['summary'])
+    
+    if data.get('facts'):
+        st.subheader("🔍 Key Facts")
+        for fact in data['facts']:
+            st.write(f"• {fact}")
+    
     # Subscores
     st.subheader("📊 Detailed Breakdown")
     
@@ -309,6 +652,17 @@ def display_results(data):
         
         for metric, value, description in metrics_data:
             st.metric(metric, f"{value:.1f}/100", help=description)
+    
+    # Competitors
+    if data.get('competitors'):
+        st.subheader("🏆 Competitors & Alternatives")
+        competitors_text = ", ".join(data['competitors'])
+        st.write(competitors_text)
+    
+    # Industry Ranking
+    if data.get('industry_rank'):
+        st.subheader("📈 Industry Position")
+        st.write(f"Ranked #{data['industry_rank']} in relevant industry category")
     
     # Provider Details
     if data.get('providers'):
@@ -340,7 +694,7 @@ def display_results(data):
             st.info(note)
     
     # Raw Data (collapsible)
-    with st.expander("🔍 Raw API Response"):
+    with st.expander("🔍 Raw Analysis Data"):
         st.json(data)
     
     # Export Options
@@ -395,12 +749,25 @@ Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 OVERALL SCORE: {data['overall']}/100
 
+Summary: {data.get('summary', 'N/A')}
+
+Key Facts:
+"""
+    
+    if data.get('facts'):
+        for fact in data['facts']:
+            summary += f"- {fact}\n"
+    
+    summary += f"""
 Detailed Breakdown:
 - Recognition: {data['subscores']['recognition'] * 100:.1f}/100
 - Detail: {data['subscores']['detail'] * 100:.1f}/100
 - Context: {data['subscores']['context'] * 100:.1f}/100
 - Competitors: {data['subscores']['competitors'] * 100:.1f}/100
 - Consistency: {data['subscores']['consistency'] * 100:.1f}/100
+
+Competitors: {', '.join(data.get('competitors', []))}
+Industry Rank: #{data.get('industry_rank', 'N/A')}
 
 Provider Results:
 """

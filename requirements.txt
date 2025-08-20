@@ -1,10 +1,19 @@
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.0.0
+# Core Streamlit and data packages
+streamlit>=1.28.0
+pandas>=2.0.0
+plotly>=5.15.0
+
+# LLM API packages (optional - for real API usage)
 openai>=1.0.0
 anthropic>=0.7.0
-google-genai>=0.3.0
-httpx>=0.25.0
+google-generativeai>=0.3.0
+
+# Utility packages
+python-dotenv>=1.0.0
+httpx>=0.24.0
 orjson>=3.9.0
-python-dotenv>=1.0.0 
-plotly
+
+# Note: When deploying to Streamlit Cloud:
+# 1. Add your API keys to .streamlit/secrets.toml
+# 2. The app will automatically use real APIs if keys are available
+# 3. Falls back to simulation mode if no keys are provided
