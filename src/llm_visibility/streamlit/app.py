@@ -55,8 +55,7 @@ ENABLED = {name: cfg["key"] for name, cfg in PROVIDERS.items() if cfg["key"]}
 SIMULATION_MODE = len(ENABLED) == 0
 
 # ---- Debug Info (Safe for Production) --------------------------------------
-st.caption("Secrets present: " + ", ".join(sorted(getattr(st, "secrets", {}).keys())))
-st.caption("Enabled providers: " + ", ".join(sorted(ENABLED.keys())) if ENABLED else "Enabled providers: none")
+# Note: Debug info moved to main function to ensure st.secrets is available
 
 # ---- Fail-Safe Provider Calls ----------------------------------------------
 
@@ -394,11 +393,16 @@ def main():
     """, unsafe_allow_html=True)
     
     # Mode indicator badge
-    st.markdown(
-        f"<span class='badge'>🔧 Configuration · "
-        f"{'Simulation Mode' if SIMULATION_MODE else 'Real Analysis Enabled'}</span>",
-        unsafe_allow_html=True
-    )
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(
+            f"<span class='badge'>🔧 Configuration · "
+            f"{'Simulation Mode' if SIMULATION_MODE else 'Real Analysis Enabled'}</span>",
+            unsafe_allow_html=True
+        )
+    with col2:
+        if st.button("🔄 Refresh Detection"):
+            st.rerun()
     
     # Debug info (temporary - remove later)
     if st.checkbox("🔍 Show Debug Info"):
@@ -408,6 +412,27 @@ def main():
         st.write(f"- OpenAI key present: {'Yes' if 'OpenAI' in ENABLED else 'No'}")
         if 'OpenAI' in ENABLED:
             st.write(f"- OpenAI key starts with: {ENABLED['OpenAI'][:10]}...")
+        
+        # Add more detailed debugging
+        st.write("**Secrets Debug:**")
+        try:
+            secrets_keys = list(st.secrets.keys()) if hasattr(st, 'secrets') else []
+            st.write(f"- st.secrets available: {'Yes' if hasattr(st, 'secrets') else 'No'}")
+            st.write(f"- st.secrets keys: {secrets_keys}")
+            if 'OPENAI_API_KEY' in secrets_keys:
+                st.write(f"- OPENAI_API_KEY in secrets: Yes")
+                st.write(f"- OPENAI_API_KEY starts with: {st.secrets['OPENAI_API_KEY'][:10]}...")
+            else:
+                st.write(f"- OPENAI_API_KEY in secrets: No")
+        except Exception as e:
+            st.write(f"- Error accessing secrets: {str(e)}")
+        
+        st.write("**Environment Debug:**")
+        import os
+        env_openai = os.getenv('OPENAI_API_KEY')
+        st.write(f"- OPENAI_API_KEY in env: {'Yes' if env_openai else 'No'}")
+        if env_openai:
+            st.write(f"- Env OPENAI_API_KEY starts with: {env_openai[:10]}...")
     
     # Sidebar
     with st.sidebar:
