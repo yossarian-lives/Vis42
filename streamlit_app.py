@@ -12,9 +12,10 @@ from datetime import datetime
 import sys
 import os
 from collections.abc import Mapping
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import re
 import json
+import statistics
 
 # ---- Schema and Validation --------------------------------------------------
 
@@ -735,6 +736,280 @@ def enhanced_guess_category(entity: str) -> str:
     # Fall back to name-based category
     return name_based_category
 
+# ---- Anthropic Provider Adapter ---------------------------------------------
+
+def get_anthropic_key() -> Optional[str]:
+    """Get Anthropic API key from environment"""
+    return os.getenv('ANTHROPIC_API_KEY')
+
+def call_anthropic_api(prompt: str) -> Optional[str]:
+    """Make API call to Anthropic with timeout and error handling"""
+    try:
+        import anthropic
+        import httpx
+        
+        api_key = get_anthropic_key()
+        if not api_key:
+            return None
+            
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            http_client=httpx.Client(timeout=20.0)
+        )
+        
+        message = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=800,
+            temperature=0.2,
+            system="You are a visibility analyst. Return ONLY valid JSON matching the exact schema requested. No markdown, no explanations.",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+        
+        # Extract text from response
+        if hasattr(message, 'content') and message.content:
+            if isinstance(message.content, list) and len(message.content) > 0:
+                return message.content[0].text
+            elif hasattr(message.content, 'text'):
+                return message.content.text
+            else:
+                return str(message.content)
+        
+        return None
+        
+    except Exception as e:
+        # Log error but don't crash
+        print(f"Anthropic API error: {str(e)}")
+        return None
+
+def analyze_with_anthropic(entity: str, category: str) -> Dict[str, Any]:
+    """
+    Analyze entity visibility using Anthropic API.
+    
+    Args:
+        entity: Entity name (normalized)
+        category: Category hint
+        
+    Returns:
+        Dict matching unified schema or structured fallback
+    """
+    prompt = make_prompt(entity, category)
+    
+    # Make API call
+    response_text = call_anthropic_api(prompt)
+    
+    if not response_text:
+        return get_fallback_result(entity, "Anthropic API call failed or timed out.")
+    
+    # Try to parse JSON
+    result = coerce_json(response_text)
+    
+    if not result:
+        return get_fallback_result(entity, "Could not parse Anthropic response as valid JSON.")
+    
+    # Validate against schema
+    if not validate_result(result):
+        return get_fallback_result(entity, "Anthropic response did not match required schema.")
+    
+    return result
+
+# ---- Gemini Provider Adapter ------------------------------------------------
+
+def get_gemini_key() -> Optional[str]:
+    """Get Gemini API key from environment"""
+    return os.getenv('GEMINI_API_KEY')
+
+def call_gemini_api(prompt: str) -> Optional[str]:
+    """Make API call to Gemini with timeout and error handling"""
+    try:
+        import google.generativeai as genai
+        
+        api_key = get_gemini_key()
+        if not api_key:
+            return None
+            
+        genai.configure(api_key=api_key)
+        
+        # Configure the model
+        generation_config = {
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "top_k": 40,
+            "max_output_tokens": 800,
+        }
+        
+        model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash-exp",
+            generation_config=generation_config,
+            system_instruction="You are a visibility analyst. Return ONLY valid JSON matching the exact schema requested. No markdown, no explanations."
+        )
+        
+        # Add JSON format instruction to prompt
+        enhanced_prompt = prompt + "\n\nIMPORTANT: Return ONLY the JSON object, no other text."
+        
+        response = model.generate_content(enhanced_prompt)
+        
+        if response and response.text:
+            return response.text
+        
+        return None
+        
+    except Exception as e:
+        # Log error but don't crash
+        print(f"Gemini API error: {str(e)}")
+        return None
+
+def analyze_with_gemini(entity: str, category: str) -> Dict[str, Any]:
+    """
+    Analyze entity visibility using Gemini API.
+    
+    Args:
+        entity: Entity name (normalized)
+        category: Category hint
+        
+    Returns:
+        Dict matching unified schema or structured fallback
+    """
+    prompt = make_prompt(entity, category)
+    
+    # Make API call
+    response_text = call_gemini_api(prompt)
+    
+    if not response_text:
+        return get_fallback_result(entity, "Gemini API call failed or timed out.")
+    
+    # Try to parse JSON
+    result = coerce_json(response_text)
+    
+    if not result:
+        return get_fallback_result(entity, "Could not parse Gemini response as valid JSON.")
+    
+    # Validate against schema
+    if not validate_result(result):
+        return get_fallback_result(entity, "Gemini response did not match required schema.")
+    
+    return result
+
+# ---- Multi-Provider Orchestrator -------------------------------------------
+
+def get_available_providers() -> Dict[str, bool]:
+    """Check which providers have API keys available"""
+    return {
+        "openai": bool(get_openai_key()),
+        "anthropic": bool(get_anthropic_key()),
+        "gemini": bool(get_gemini_key())
+    }
+
+def merge_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Merge multiple provider results using median scoring.
+    
+    Args:
+        results: List of provider results matching unified schema
+        
+    Returns:
+        Merged result with median scores
+    """
+    if not results:
+        return get_fallback_result("unknown", "No provider results available")
+    
+    if len(results) == 1:
+        return results[0]
+    
+    # Extract scores for each metric
+    overall_scores = [r.get('overall_score', 50) for r in results]
+    recognition_scores = [r.get('breakdown', {}).get('recognition', 50) for r in results]
+    media_scores = [r.get('breakdown', {}).get('media', 50) for r in results]
+    context_scores = [r.get('breakdown', {}).get('context', 50) for r in results]
+    competitors_scores = [r.get('breakdown', {}).get('competitors', 50) for r in results]
+    consistency_scores = [r.get('breakdown', {}).get('consistency', 50) for r in results]
+    
+    # Calculate median scores
+    merged_result = {
+        "entity": results[0].get('entity', 'unknown'),
+        "category": results[0].get('category', 'unknown'),
+        "overall_score": int(statistics.median(overall_scores)),
+        "breakdown": {
+            "recognition": int(statistics.median(recognition_scores)),
+            "media": int(statistics.median(media_scores)),
+            "context": int(statistics.median(context_scores)),
+            "competitors": int(statistics.median(competitors_scores)),
+            "consistency": int(statistics.median(consistency_scores))
+        },
+        "notes": f"Multi-provider analysis using {len(results)} LLMs. Scores represent median values for consistency.",
+        "sources": []
+    }
+    
+    # Collect sources from all providers
+    for result in results:
+        if 'sources' in result and result['sources']:
+            merged_result['sources'].extend(result['sources'])
+    
+    # Limit sources to max 8
+    merged_result['sources'] = merged_result['sources'][:8]
+    
+    return merged_result
+
+def analyze_with_multiple_providers(entity: str, category: str, selected_providers: List[str]) -> Dict[str, Any]:
+    """
+    Analyze entity using multiple selected providers and merge results.
+    
+    Args:
+        entity: Entity name (normalized)
+        category: Category hint
+        selected_providers: List of provider names to use
+        
+    Returns:
+        Merged result from all available providers
+    """
+    available = get_available_providers()
+    results = []
+    
+    # Analyze with each selected provider
+    if "OpenAI" in selected_providers and available["openai"]:
+        try:
+            with st.spinner("🔍 Analyzing with OpenAI..."):
+                result = analyze_with_openai(entity, category)
+                if result:
+                    results.append(result)
+                    st.success("✅ OpenAI analysis completed")
+        except Exception as e:
+            st.warning(f"⚠️ OpenAI analysis failed: {str(e)}")
+    
+    if "Anthropic" in selected_providers and available["anthropic"]:
+        try:
+            with st.spinner("🔍 Analyzing with Anthropic..."):
+                result = analyze_with_anthropic(entity, category)
+                if result:
+                    results.append(result)
+                    st.success("✅ Anthropic analysis completed")
+        except Exception as e:
+            st.warning(f"⚠️ Anthropic analysis failed: {str(e)}")
+    
+    if "Gemini" in selected_providers and available["gemini"]:
+        try:
+            with st.spinner("🔍 Analyzing with Gemini..."):
+                result = analyze_with_gemini(entity, category)
+                if result:
+                    results.append(result)
+                    st.success("✅ Gemini analysis completed")
+        except Exception as e:
+            st.warning(f"⚠️ Gemini analysis failed: {str(e)}")
+    
+    if not results:
+        return get_fallback_result(entity, "All selected providers failed to return results.")
+    
+    # Merge results if multiple providers succeeded
+    if len(results) > 1:
+        st.info(f"🔄 Merging results from {len(results)} providers...")
+        return merge_results(results)
+    else:
+        return results[0]
+
 # Page configuration
 st.set_page_config(
     page_title="LLM Visibility Analyzer",
@@ -916,24 +1191,10 @@ def main():
         with st.spinner("🔍 Analyzing visibility across LLMs..."):
             # Try real API calls first
             if not SIMULATION_MODE:
-                # Use our fail-safe OpenAI call
-                if "OpenAI" in providers_selected and "OpenAI" in ENABLED:
-                    # Create a specific prompt for the entity and category
-                    category_hint = category if category else "AI/tech"
-                    prompt = make_prompt(normalized_entity, category_hint)
-                    
-                    # Show what we're trying to do
-                    st.info(f"🔍 Attempting OpenAI API call with model fallback...")
-                    
+                # Use multi-provider analysis
+                if providers_selected:
                     try:
-                        result = analyze_with_openai(normalized_entity, category_hint)
-                        
-                        # Validate the result
-                        if validate_result(result):
-                            st.success("✅ Analysis completed successfully with valid schema!")
-                        else:
-                            st.warning("⚠️ Analysis completed but schema validation failed - using fallback")
-                            result = get_fallback_result(normalized_entity, "Schema validation failed")
+                        result = analyze_with_multiple_providers(normalized_entity, category, providers_selected)
                         
                         # Store in session state for recent analyses
                         if 'recent_analyses' not in st.session_state:
@@ -949,7 +1210,7 @@ def main():
                         display_results(result)
                         return
                     except Exception as e:
-                        st.error(f"❌ Error during OpenAI API call: {str(e)}")
+                        st.error(f"❌ Error during multi-provider analysis: {str(e)}")
                         st.info("💡 **Error Details:**")
                         st.info(f"Exception type: {type(e).__name__}")
                         st.info(f"Error message: {str(e)}")
