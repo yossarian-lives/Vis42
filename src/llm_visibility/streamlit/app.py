@@ -559,6 +559,10 @@ def main():
                     # Use our fail-safe OpenAI call
                     if "OpenAI" in providers_selected and "OpenAI" in ENABLED:
                         prompt = f"Analyze the visibility of '{entity}' in the AI/tech space. Provide a score from 0-100 and brief analysis."
+                        
+                        # Show what we're trying to do
+                        st.info(f"🔍 Attempting OpenAI API call with model fallback...")
+                        
                         result = call_openai(prompt)
                         if result:
                             # Parse the result and create a structured response
@@ -584,6 +588,14 @@ def main():
                             
                             # Display results
                             display_results(analysis_result)
+                            return
+                        else:
+                            # Show specific error information
+                            st.error("❌ OpenAI API call returned no result")
+                            st.info("💡 **Next Steps:**")
+                            st.info("1. Use the '🧪 Test API Key' button above to test your key")
+                            st.info("2. Check the error message that should appear above")
+                            st.info("3. Verify your API key has credits and access")
                             return
                 
                 # Fallback to simulation if no real results
