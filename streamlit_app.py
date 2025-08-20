@@ -13,6 +13,84 @@ import sys
 import os
 from collections.abc import Mapping
 
+# ---- Schema and Validation --------------------------------------------------
+
+# Unified schema that all providers MUST return
+VISIBILITY_SCHEMA = {
+    "type": "object",
+    "required": ["entity", "category", "overall_score", "breakdown", "notes", "sources"],
+    "properties": {
+        "entity": {"type": "string"},
+        "category": {"type": "string"},
+        "overall_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "breakdown": {
+            "type": "object",
+            "required": ["recognition", "media", "context", "competitors", "consistency"],
+            "properties": {
+                "recognition": {"type": "number", "minimum": 0, "maximum": 100},
+                "media": {"type": "number", "minimum": 0, "maximum": 100},
+                "context": {"type": "number", "minimum": 0, "maximum": 100},
+                "competitors": {"type": "number", "minimum": 0, "maximum": 100},
+                "consistency": {"type": "number", "minimum": 0, "maximum": 100}
+            },
+            "additionalProperties": False
+        },
+        "notes": {"type": "string", "maxLength": 600},
+        "sources": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 8
+        }
+    },
+    "additionalProperties": False
+}
+
+def validate_result(data: dict) -> bool:
+    """Validate that a result matches our schema"""
+    try:
+        # Simple validation without external jsonschema dependency
+        if not isinstance(data, dict):
+            return False
+        
+        required_fields = ["entity", "category", "overall_score", "breakdown", "notes", "sources"]
+        for field in required_fields:
+            if field not in data:
+                return False
+        
+        # Validate breakdown
+        breakdown = data.get("breakdown", {})
+        breakdown_fields = ["recognition", "media", "context", "competitors", "consistency"]
+        for field in breakdown_fields:
+            if field not in breakdown:
+                return False
+            if not isinstance(breakdown[field], (int, float)) or breakdown[field] < 0 or breakdown[field] > 100:
+                return False
+        
+        # Validate overall_score
+        if not isinstance(data["overall_score"], (int, float)) or data["overall_score"] < 0 or data["overall_score"] > 100:
+            return False
+        
+        return True
+    except Exception:
+        return False
+
+def get_fallback_result(entity: str, reason: str = "Structured fallback due to unparseable provider output.") -> dict:
+    """Return a structured fallback result when providers fail"""
+    return {
+        "entity": entity,
+        "category": "unknown",
+        "overall_score": 40,
+        "breakdown": {
+            "recognition": 40,
+            "media": 40,
+            "context": 40,
+            "competitors": 40,
+            "consistency": 60
+        },
+        "notes": reason,
+        "sources": []
+    }
+
 # ---- Robust Secret Detection -------------------------------------------------
 
 def _find_in_mapping(d: Mapping, name: str):
@@ -92,6 +170,57 @@ def call_openai(prompt: str) -> str | None:
         st.error(f"OpenAI API call failed: {str(e)}")
         return None
 
+def parse_openai_response(response: str, entity: str, category: str) -> dict:
+    """Parse OpenAI response and convert to structured schema format"""
+    try:
+        # Try to extract structured information from the response
+        # This is a simple parser - you can enhance it based on your needs
+        
+        # Default values
+        result = {
+            "entity": entity,
+            "category": category or "auto-detected",
+            "overall_score": 50,  # Default middle score
+            "breakdown": {
+                "recognition": 50,
+                "media": 50,
+                "context": 50,
+                "competitors": 50,
+                "consistency": 50
+            },
+            "notes": response[:600],  # Truncate to max length
+            "sources": []
+        }
+        
+        # Try to extract score if mentioned
+        import re
+        score_match = re.search(r'(\d{1,3})/100|score[:\s]*(\d{1,3})|(\d{1,3})\s*out\s*of\s*100', response, re.IGNORECASE)
+        if score_match:
+            score = int(score_match.group(1) or score_match.group(2) or score_match.group(3))
+            if 0 <= score <= 100:
+                result["overall_score"] = score
+        
+        # Try to extract category if not provided
+        if not category or category == "auto-detected":
+            category_keywords = {
+                "Technology": ["tech", "software", "ai", "artificial intelligence", "machine learning"],
+                "Finance": ["finance", "banking", "investment", "crypto", "blockchain"],
+                "Healthcare": ["health", "medical", "pharma", "biotech"],
+                "Education": ["education", "learning", "academic", "university"],
+                "Entertainment": ["entertainment", "media", "gaming", "film", "music"]
+            }
+            
+            response_lower = response.lower()
+            for cat, keywords in category_keywords.items():
+                if any(keyword in response_lower for keyword in keywords):
+                    result["category"] = cat
+                    break
+        
+        return result
+    except Exception as e:
+        st.warning(f"Failed to parse OpenAI response: {str(e)}")
+        return get_fallback_result(entity, f"Failed to parse response: {str(e)}")
+
 # Page configuration
 st.set_page_config(
     page_title="LLM Visibility Analyzer",
@@ -127,6 +256,12 @@ st.markdown("""
         font-size: 0.9rem;
         color: #667eea;
         border: 1px solid #e1e5e9;
+    }
+    .score-chart {
+        background: white;
+        padding: 1rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -247,7 +382,17 @@ def main():
             if not SIMULATION_MODE:
                 # Use our fail-safe OpenAI call
                 if "OpenAI" in providers_selected and "OpenAI" in ENABLED:
-                    prompt = f"Analyze the visibility of '{entity}' in the AI/tech space. Provide a score from 0-100 and brief analysis."
+                    prompt = f"""Analyze the visibility of '{entity}' in the AI/tech space. 
+                    
+Provide a comprehensive analysis including:
+1. Overall visibility score (0-100)
+2. Recognition level
+3. Media presence
+4. Context understanding
+5. Competitive positioning
+6. Brand consistency
+
+Format your response with clear sections and scores."""
                     
                     # Show what we're trying to do
                     st.info(f"🔍 Attempting OpenAI API call with model fallback...")
@@ -255,16 +400,15 @@ def main():
                     try:
                         result = call_openai(prompt)
                         if result:
-                            # Parse the result and create a structured response
-                            # For now, create a simple result structure
-                            analysis_result = {
-                                'entity': entity,
-                                'overall': 85,  # Placeholder - you can parse this from the actual response
-                                'subscores': {'recognition': 0.8, 'detail': 0.9, 'context': 0.8, 'competitors': 0.7, 'consistency': 0.8},
-                                'providers': {'openai': {'score': 85, 'response': result}},
-                                'notes': [result],
-                                'category': category or 'auto-detected'
-                            }
+                            # Parse the result using our schema
+                            analysis_result = parse_openai_response(result, entity, category)
+                            
+                            # Validate the result
+                            if validate_result(analysis_result):
+                                st.success("✅ Analysis completed successfully with valid schema!")
+                            else:
+                                st.warning("⚠️ Analysis completed but schema validation failed - using fallback")
+                                analysis_result = get_fallback_result(entity, "Schema validation failed")
                             
                             # Store in session state for recent analyses
                             if 'recent_analyses' not in st.session_state:
@@ -272,7 +416,7 @@ def main():
                             
                             st.session_state.recent_analyses.append({
                                 'entity': entity,
-                                'score': analysis_result['overall'],
+                                'score': analysis_result['overall_score'],
                                 'timestamp': datetime.now()
                             })
                             
@@ -297,15 +441,15 @@ def main():
             # Fallback to simulation if no real results
             if SIMULATION_MODE:
                 st.info("Running in simulation mode - no API keys available")
+                # Use fallback result for simulation
+                analysis_result = get_fallback_result(entity, "Simulation mode - no real API calls")
+                display_results(analysis_result)
             else:
                 st.warning("API call failed. Check your API keys and try again.")
                 st.info("💡 **Troubleshooting Tips:**")
                 st.info("1. Verify your API key is valid and has credits")
                 st.info("2. Check if the model 'gpt-4o-mini' is available")
                 st.info("3. Ensure your OpenAI account has access to the API")
-            
-            # For now, show a simple message
-            st.info("Analysis completed. Check the results above.")
     
     # Quick stats section
     st.header("📊 Quick Stats")
@@ -316,27 +460,67 @@ def main():
         st.info("No analyses yet. Start by analyzing an entity above.")
 
 def display_results(results):
-    """Display analysis results in a structured format"""
+    """Display analysis results in a structured format using the schema"""
     st.header(f"📈 Analysis Results: {results['entity']}")
     
     # Overall score
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.metric("Overall Visibility Score", f"{results['overall']}/100")
+        st.metric("Overall Visibility Score", f"{results['overall_score']}/100")
     
-    # Provider results
-    if 'providers' in results:
-        st.subheader("🤖 Provider Results")
-        for provider, data in results['providers'].items():
-            with st.expander(f"{provider.title()} Analysis"):
-                st.write(f"**Score:** {data.get('score', 'N/A')}")
-                st.write(f"**Response:** {data.get('response', 'No response')}")
+    # Breakdown scores
+    st.subheader("📊 Detailed Breakdown")
     
-    # Notes
-    if 'notes' in results and results['notes']:
+    # Create a radar chart for the breakdown
+    breakdown = results['breakdown']
+    categories = list(breakdown.keys())
+    values = list(breakdown.values())
+    
+    # Create the radar chart
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values,
+        theta=categories,
+        fill='toself',
+        name='Visibility Scores',
+        line_color='#667eea'
+    ))
+    
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100]
+            )),
+        showlegend=False,
+        title="Visibility Breakdown Analysis"
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Individual metrics
+    col1, col2 = st.columns(2)
+    with col1:
+        for i in range(0, len(categories), 2):
+            if i < len(categories):
+                st.metric(categories[i].title(), f"{values[i]}/100")
+    with col2:
+        for i in range(1, len(categories), 2):
+            if i < len(categories):
+                st.metric(categories[i].title(), f"{values[i]}/100")
+    
+    # Notes and sources
+    if results.get('notes'):
         st.subheader("📝 Analysis Notes")
-        for note in results['notes']:
-            st.write(note)
+        st.write(results['notes'])
+    
+    if results.get('sources') and len(results['sources']) > 0:
+        st.subheader("🔗 Sources")
+        for source in results['sources']:
+            st.write(f"• {source}")
+    
+    # Category info
+    st.info(f"📂 **Category:** {results.get('category', 'Unknown')}")
 
 if __name__ == "__main__":
     main() 
