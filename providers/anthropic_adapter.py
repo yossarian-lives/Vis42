@@ -21,7 +21,7 @@ def call_anthropic_api(prompt: str) -> Optional[str]:
         api_key = get_anthropic_key()
         if not api_key:
             return None
-        
+            
         client = anthropic.Anthropic(
             api_key=api_key,
             http_client=httpx.Client(timeout=20.0)
@@ -71,11 +71,13 @@ def analyze_with_anthropic(entity: str, category: str) -> Dict[str, Any]:
     
     # Make API call
     response_text = call_anthropic_api(prompt)
+    
     if not response_text:
         return get_fallback_result(entity, "Anthropic API call failed or timed out.")
     
     # Try to parse JSON
     result = coerce_json(response_text)
+    
     if not result:
         return get_fallback_result(entity, "Could not parse Anthropic response as valid JSON.")
     
