@@ -904,6 +904,32 @@ def get_available_providers() -> Dict[str, bool]:
         "gemini": bool(get_gemini_key())
     }
 
+def calculate_overall_score(breakdown: Dict[str, int]) -> int:
+    """
+    Calculate overall score using weighted formula.
+    
+    Weights:
+    - Recognition: 30%
+    - Media: 25% 
+    - Context: 20%
+    - Consistency: 15%
+    - Competitors: 10%
+    """
+    weights = {
+        "recognition": 0.30,
+        "media": 0.25,
+        "context": 0.20,
+        "consistency": 0.15,
+        "competitors": 0.10
+    }
+    
+    weighted_sum = 0
+    for metric, weight in weights.items():
+        score = breakdown.get(metric, 40)
+        weighted_sum += score * weight
+    
+    return int(round(weighted_sum))
+
 def merge_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Merge multiple provider results using median scoring.
@@ -915,95 +941,141 @@ def merge_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         Merged result with median scores
     """
     if not results:
-        return get_fallback_result("unknown", "No provider results available")
+        return get_fallback_result("unknown", "No provider responded.")
     
     if len(results) == 1:
         return results[0]
     
-    # Extract scores for each metric
-    overall_scores = [r.get('overall_score', 50) for r in results]
-    recognition_scores = [r.get('breakdown', {}).get('recognition', 50) for r in results]
-    media_scores = [r.get('breakdown', {}).get('media', 50) for r in results]
-    context_scores = [r.get('breakdown', {}).get('context', 50) for r in results]
-    competitors_scores = [r.get('breakdown', {}).get('competitors', 50) for r in results]
-    consistency_scores = [r.get('breakdown', {}).get('consistency', 50) for r in results]
+    # Use first result as base
+    base_result = results[0]
+    entity = base_result["entity"]
+    category = base_result["category"]
     
-    # Calculate median scores
-    merged_result = {
-        "entity": results[0].get('entity', 'unknown'),
-        "category": results[0].get('category', 'unknown'),
-        "overall_score": int(statistics.median(overall_scores)),
-        "breakdown": {
-            "recognition": int(statistics.median(recognition_scores)),
-            "media": int(statistics.median(media_scores)),
-            "context": int(statistics.median(context_scores)),
-            "competitors": int(statistics.median(competitors_scores)),
-            "consistency": int(statistics.median(consistency_scores))
-        },
-        "notes": f"Multi-provider analysis using {len(results)} LLMs. Scores represent median values for consistency.",
-        "sources": []
+    # Collect all breakdown scores for median calculation
+    breakdown_scores = {
+        "recognition": [],
+        "media": [],
+        "context": [],
+        "competitors": [],
+        "consistency": []
     }
     
-    # Collect sources from all providers
     for result in results:
-        if 'sources' in result and result['sources']:
-            merged_result['sources'].extend(result['sources'])
+        for metric, score in result["breakdown"].items():
+            if metric in breakdown_scores:
+                breakdown_scores[metric].append(score)
     
-    # Limit sources to max 8
-    merged_result['sources'] = merged_result['sources'][:8]
+    # Calculate median scores
+    merged_breakdown = {}
+    for metric, scores in breakdown_scores.items():
+        merged_breakdown[metric] = int(statistics.median(scores)) if scores else 40
     
-    return merged_result
+    # Calculate weighted overall score
+    overall_score = calculate_overall_score(merged_breakdown)
+    
+    # Merge notes (trim to 600 chars)
+    all_notes = []
+    for result in results:
+        if result.get("notes"):
+            all_notes.append(result["notes"])
+    
+    merged_notes = " | ".join(all_notes)[:600]
+    if len(" | ".join(all_notes)) > 600:
+        merged_notes = merged_notes.rsplit(" ", 1)[0] + "..."
+    
+    # Merge and deduplicate sources (cap at 8)
+    all_sources = []
+    for result in results:
+        all_sources.extend(result.get("sources", []))
+    
+    # Deduplicate while preserving order
+    unique_sources = []
+    seen = set()
+    for source in all_sources:
+        if source not in seen and len(unique_sources) < 8:
+            unique_sources.append(source)
+            seen.add(source)
+    
+    return {
+        "entity": entity,
+        "category": category,
+        "overall_score": overall_score,
+        "breakdown": merged_breakdown,
+        "notes": merged_notes or f"Merged analysis from {len(results)} providers.",
+        "sources": unique_sources
+    }
 
-def analyze_with_multiple_providers(entity: str, category: str, selected_providers: List[str]) -> Dict[str, Any]:
+def analyze_entity(raw_entity: str, selected_providers: List[str] = None) -> Dict[str, Any]:
     """
-    Analyze entity using multiple selected providers and merge results.
+    Main orchestration function.
     
     Args:
-        entity: Entity name (normalized)
-        category: Category hint
-        selected_providers: List of provider names to use
+        raw_entity: Raw entity string from UI input
+        selected_providers: List of provider names to use (optional)
         
     Returns:
-        Merged result from all available providers
+        Final merged analysis result
     """
-    available = get_available_providers()
+    if not raw_entity or not raw_entity.strip():
+        return get_fallback_result("", "Empty entity provided.")
+    
+    # Step 1: Normalize entity
+    normalized_entity = normalize_entity(raw_entity)
+    
+    # Step 2: Guess category  
+    category = enhanced_guess_category(normalized_entity)
+    
+    # Step 3: Determine available providers
+    available_providers = get_available_providers()
+    
+    if selected_providers:
+        # Filter to only selected and available providers
+        providers_to_use = [p.lower() for p in selected_providers if available_providers.get(p.lower(), False)]
+    else:
+        # Use all available providers
+        providers_to_use = [p for p, available in available_providers.items() if available]
+    
+    if not providers_to_use:
+        return get_fallback_result(normalized_entity, "No providers available - add API keys to enable real analysis.")
+    
+    # Step 4: Call each enabled adapter
     results = []
     
-    # Analyze with each selected provider
-    if "OpenAI" in selected_providers and available["openai"]:
+    if "openai" in providers_to_use:
         try:
             with st.spinner("🔍 Analyzing with OpenAI..."):
-                result = analyze_with_openai(entity, category)
+                result = analyze_with_openai(normalized_entity, category)
                 if result:
                     results.append(result)
                     st.success("✅ OpenAI analysis completed")
         except Exception as e:
             st.warning(f"⚠️ OpenAI analysis failed: {str(e)}")
     
-    if "Anthropic" in selected_providers and available["anthropic"]:
+    if "anthropic" in providers_to_use:
         try:
             with st.spinner("🔍 Analyzing with Anthropic..."):
-                result = analyze_with_anthropic(entity, category)
+                result = analyze_with_anthropic(normalized_entity, category)
                 if result:
                     results.append(result)
                     st.success("✅ Anthropic analysis completed")
         except Exception as e:
             st.warning(f"⚠️ Anthropic analysis failed: {str(e)}")
     
-    if "Gemini" in selected_providers and available["gemini"]:
+    if "gemini" in providers_to_use:
         try:
             with st.spinner("🔍 Analyzing with Gemini..."):
-                result = analyze_with_gemini(entity, category)
+                result = analyze_with_gemini(normalized_entity, category)
                 if result:
                     results.append(result)
                     st.success("✅ Gemini analysis completed")
         except Exception as e:
             st.warning(f"⚠️ Gemini analysis failed: {str(e)}")
     
+    # Step 5: Merge results or return fallback
     if not results:
-        return get_fallback_result(entity, "All selected providers failed to return results.")
+        return get_fallback_result(normalized_entity, "All provider calls failed - check API keys and network connection.")
     
-    # Merge results if multiple providers succeeded
+    # Step 6: Return merged result
     if len(results) > 1:
         st.info(f"🔄 Merging results from {len(results)} providers...")
         return merge_results(results)
@@ -1194,7 +1266,7 @@ def main():
                 # Use multi-provider analysis
                 if providers_selected:
                     try:
-                        result = analyze_with_multiple_providers(normalized_entity, category, providers_selected)
+                        result = analyze_entity(normalized_entity, providers_selected)
                         
                         # Store in session state for recent analyses
                         if 'recent_analyses' not in st.session_state:
