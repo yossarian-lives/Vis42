@@ -170,11 +170,76 @@ def call_openai(prompt: str) -> str | None:
         st.error(f"OpenAI API call failed: {str(e)}")
         return None
 
+def make_prompt(entity: str, category_hint: str) -> str:
+    """
+    Create a prompt that forces JSON-only output with strict schema compliance.
+    
+    Args:
+        entity: The entity to analyze (e.g., "Vuori")
+        category_hint: Category context (e.g., "consumer apparel / activewear")
+    
+    Returns:
+        Complete prompt string that enforces JSON output
+    """
+    
+    prompt = f"""Analyze the visibility of "{entity}" in the {category_hint} space across LLM knowledge bases.
+
+DEFINITION OF VISIBILITY:
+- Breadth: How widely known across different AI models and contexts
+- Freshness: How current and up-to-date the information is
+- Depth/Accuracy: Level of detailed, accurate information available
+- Hallucination penalty: Deduct points for inconsistent or made-up information
+
+SCORING METHODOLOGY (0-100 for each):
+- Recognition: How well LLMs recognize and identify this entity
+- Media: Coverage in news, articles, and media mentions
+- Context: Understanding of industry position and relationships
+- Competitors: Awareness of alternatives and competitive landscape  
+- Consistency: Stability and agreement across different queries/models
+
+You MUST return ONLY valid minified JSON that matches this exact schema. No markdown, no code fences, no commentary:
+
+{{"entity":"{entity}","category":"{category_hint}","overall_score":85,"breakdown":{{"recognition":80,"media":75,"context":85,"competitors":90,"consistency":85}},"notes":"Brief analysis paragraph under 600 chars","sources":["domain1.com","brief-citation-2","source-3"]}}
+
+CRITICAL REQUIREMENTS:
+- Return ONLY the JSON object, nothing else
+- All scores must be integers 0-100
+- Notes must be under 600 characters
+- Sources should be domains or brief citations (max 8)
+- If uncertain, provide best-effort estimates and keep internal consistency
+- Calculate overall_score as weighted average: recognition(30%) + media(25%) + context(20%) + consistency(15%) + competitors(10%)
+
+Analyze "{entity}" now:"""
+    
+    return prompt
+
 def parse_openai_response(response: str, entity: str, category: str) -> dict:
     """Parse OpenAI response and convert to structured schema format"""
     try:
-        # Try to extract structured information from the response
-        # This is a simple parser - you can enhance it based on your needs
+        # First, try to extract JSON from the response
+        import re
+        import json
+        
+        # Look for JSON in the response (handle both raw JSON and markdown code blocks)
+        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+        json_match = re.search(json_pattern, response)
+        
+        if json_match:
+            try:
+                json_str = json_match.group(0)
+                parsed_data = json.loads(json_str)
+                
+                # Validate the parsed data
+                if validate_result(parsed_data):
+                    st.success("✅ Successfully parsed structured JSON response!")
+                    return parsed_data
+                else:
+                    st.warning("⚠️ JSON parsed but failed schema validation - using fallback")
+            except json.JSONDecodeError as e:
+                st.warning(f"⚠️ Failed to parse JSON: {str(e)}")
+        
+        # If JSON parsing failed, try to extract structured information from the response
+        # This is a fallback parser for non-JSON responses
         
         # Default values
         result = {
@@ -193,7 +258,6 @@ def parse_openai_response(response: str, entity: str, category: str) -> dict:
         }
         
         # Try to extract score if mentioned
-        import re
         score_match = re.search(r'(\d{1,3})/100|score[:\s]*(\d{1,3})|(\d{1,3})\s*out\s*of\s*100', response, re.IGNORECASE)
         if score_match:
             score = int(score_match.group(1) or score_match.group(2) or score_match.group(3))
@@ -207,7 +271,9 @@ def parse_openai_response(response: str, entity: str, category: str) -> dict:
                 "Finance": ["finance", "banking", "investment", "crypto", "blockchain"],
                 "Healthcare": ["health", "medical", "pharma", "biotech"],
                 "Education": ["education", "learning", "academic", "university"],
-                "Entertainment": ["entertainment", "media", "gaming", "film", "music"]
+                "Entertainment": ["entertainment", "media", "gaming", "film", "music"],
+                "Consumer": ["consumer", "apparel", "fashion", "retail", "brand"],
+                "Business": ["business", "enterprise", "corporate", "startup", "company"]
             }
             
             response_lower = response.lower()
@@ -353,7 +419,7 @@ def main():
         entity = st.text_input("Enter entity to analyze", placeholder="e.g., Apple, ChatGPT, Tesla")
         category = st.selectbox(
             "📂 Category (Optional)",
-            ["", "Technology", "Finance", "Healthcare", "Education", "Entertainment", "Other"],
+            ["", "Technology", "Finance", "Healthcare", "Education", "Entertainment", "Consumer", "Business", "Other"],
             help="Choose category or auto-detect"
         )
         
@@ -382,17 +448,9 @@ def main():
             if not SIMULATION_MODE:
                 # Use our fail-safe OpenAI call
                 if "OpenAI" in providers_selected and "OpenAI" in ENABLED:
-                    prompt = f"""Analyze the visibility of '{entity}' in the AI/tech space. 
-                    
-Provide a comprehensive analysis including:
-1. Overall visibility score (0-100)
-2. Recognition level
-3. Media presence
-4. Context understanding
-5. Competitive positioning
-6. Brand consistency
-
-Format your response with clear sections and scores."""
+                    # Create a specific prompt for the entity and category
+                    category_hint = category if category else "AI/tech"
+                    prompt = make_prompt(entity, category_hint)
                     
                     # Show what we're trying to do
                     st.info(f"🔍 Attempting OpenAI API call with model fallback...")
