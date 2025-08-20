@@ -11,12 +11,56 @@ import plotly.graph_objects as go
 from datetime import datetime
 import sys
 import os
+from collections.abc import Mapping
 
 # Add the src directory to the path so we can import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-from llm_visibility.utils.providers import PROVIDERS, ENABLED, SIMULATION_MODE
 from llm_visibility.utils.analysis import analyze_visibility
+
+# ---- Robust Secret Detection -------------------------------------------------
+
+def _find_in_mapping(d: Mapping, name: str):
+    """Recursive search for `name` inside nested secrets dicts"""
+    if not isinstance(d, Mapping):
+        return None
+    if name in d:
+        v = d[name]
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    for v in d.values():
+        if isinstance(v, Mapping):
+            found = _find_in_mapping(v, name)
+            if found:
+                return found
+    return None
+
+def get_secret_or_env(name: str) -> str | None:
+    """Get secret from st.secrets (any nesting level) or fallback to environment variable"""
+    # 1) search st.secrets at any nesting level
+    try:
+        found = _find_in_mapping(st.secrets, name)
+        if found:
+            return found
+    except Exception:
+        pass
+    # 2) fallback to environment variable (useful locally / alt hosts)
+    val = os.getenv(name)
+    return val.strip() if isinstance(val, str) and val.strip() else None
+
+# ---- Provider Configuration --------------------------------------------------
+
+PROVIDERS = {
+    "OpenAI":    {"key": get_secret_or_env("OPENAI_API_KEY")},
+    "Anthropic": {"key": get_secret_or_env("ANTHROPIC_API_KEY")},
+    "Gemini":    {"key": get_secret_or_env("GEMINI_API_KEY")},
+}
+ENABLED = {name: cfg["key"] for name, cfg in PROVIDERS.items() if cfg["key"]}
+SIMULATION_MODE = len(ENABLED) == 0
+
+# ---- Debug Info (Safe for Production) --------------------------------------
+st.caption("Secrets detected: " + ", ".join(sorted(st.secrets.keys())))
+st.caption("Enabled providers: " + ", ".join(sorted(ENABLED.keys())) if ENABLED else "Enabled providers: none")
 
 # Page configuration
 st.set_page_config(
@@ -70,6 +114,16 @@ st.markdown("""
     }
     .finding-card.error {
         border-left-color: #dc3545;
+    }
+    .badge {
+        background: #f0f2f6;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        display: inline-block;
+        margin: 1rem 0;
+        font-size: 0.9rem;
+        color: #667eea;
+        border: 1px solid #e1e5e9;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -325,6 +379,13 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
+    # Mode indicator badge
+    st.markdown(
+        f"<span class='badge'>🔧 Configuration · "
+        f"{'Simulation Mode' if SIMULATION_MODE else 'Real Analysis Enabled'}</span>",
+        unsafe_allow_html=True
+    )
+    
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
@@ -343,24 +404,24 @@ def main():
         # Show provider status (clean approach)
         for p in PROVIDERS:
             if p in ENABLED:
-                st.write(f"✅ {p.capitalize()} enabled")
+                st.write(f"✅ {p} enabled")
             else:
-                st.write(f"⚪ {p.capitalize()} (no key)")
+                st.write(f"⚪ {p} (no key)")
         
         st.divider()
         
         if not SIMULATION_MODE:
             # Real providers - let user select which to use
-            openai_enabled = st.checkbox("OpenAI (GPT-4o)", value="openai" in ENABLED)
-            anthropic_enabled = st.checkbox("Anthropic (Claude)", value="anthropic" in ENABLED)
-            gemini_enabled = st.checkbox("Google (Gemini)", value="gemini" in ENABLED)
+            openai_enabled = st.checkbox("OpenAI (GPT-4o)", value="OpenAI" in ENABLED)
+            anthropic_enabled = st.checkbox("Anthropic (Claude)", value="Anthropic" in ENABLED)
+            gemini_enabled = st.checkbox("Google (Gemini)", value="Gemini" in ENABLED)
             
             providers_selected = []
-            if openai_enabled and "openai" in ENABLED:
+            if openai_enabled and "OpenAI" in ENABLED:
                 providers_selected.append("openai")
-            if anthropic_enabled and "anthropic" in ENABLED:
+            if anthropic_enabled and "Anthropic" in ENABLED:
                 providers_selected.append("anthropic")
-            if gemini_enabled and "gemini" in ENABLED:
+            if gemini_enabled and "Gemini" in ENABLED:
                 providers_selected.append("gemini")
         else:
             # Simulation mode - all providers enabled
