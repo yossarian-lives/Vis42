@@ -145,33 +145,81 @@ SIMULATION_MODE = len(ENABLED) == 0
 
 # ---- Fail-Safe Provider Calls ----------------------------------------------
 
-def call_openai(prompt: str) -> str | None:
-    if "OpenAI" not in ENABLED:
-        return None
+# ---- OpenAI Provider Adapter ------------------------------------------------
+
+def get_openai_key() -> Optional[str]:
+    """Get OpenAI API key from environment"""
+    return os.getenv('OPENAI_API_KEY')
+
+def call_openai_api(prompt: str) -> Optional[str]:
+    """Make API call to OpenAI with timeout and error handling"""
     try:
         from openai import OpenAI
         import httpx
-        client = OpenAI(api_key=ENABLED["OpenAI"], http_client=httpx.Client(timeout=20))
-        # Try gpt-4o-mini first, fallback to gpt-3.5-turbo if not available
-        try:
-            resp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-        except Exception as model_error:
-            # Fallback to gpt-3.5-turbo if gpt-4o-mini fails
-            st.info("⚠️ gpt-4o-mini not available, trying gpt-3.5-turbo...")
-            resp = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-            )
-        return resp.choices[0].message.content
+        
+        api_key = get_openai_key()
+        if not api_key:
+            return None
+            
+        client = OpenAI(
+            api_key=api_key,
+            http_client=httpx.Client(timeout=20.0)
+        )
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "You are a visibility analyst. Return ONLY valid JSON matching the exact schema requested. No markdown, no explanations."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            temperature=0.3,
+            max_tokens=800,
+            response_format={"type": "json_object"}
+        )
+        
+        return response.choices[0].message.content
+        
     except Exception as e:
-        # Log the error for debugging
-        st.error(f"OpenAI API call failed: {str(e)}")
+        # Log error but don't crash
+        print(f"OpenAI API error: {str(e)}")
         return None
+
+def analyze_with_openai(entity: str, category: str) -> Dict[str, Any]:
+    """
+    Analyze entity visibility using OpenAI API.
+    
+    Args:
+        entity: Entity name (normalized)
+        category: Category hint
+        
+    Returns:
+        Dict matching unified schema or structured fallback
+    """
+    prompt = make_prompt(entity, category)
+    
+    # Make API call
+    response_text = call_openai_api(prompt)
+    
+    if not response_text:
+        return get_fallback_result(entity, "OpenAI API call failed or timed out.")
+    
+    # Try to parse JSON
+    result = coerce_json(response_text)
+    
+    if not result:
+        return get_fallback_result(entity, "Could not parse OpenAI response as valid JSON.")
+    
+    # Validate against schema
+    if not validate_result(result):
+        return get_fallback_result(entity, "OpenAI response did not match required schema.")
+    
+    return result
 
 def make_prompt(entity: str, category_hint: str) -> str:
     """
@@ -795,7 +843,7 @@ def main():
                 with st.spinner("Testing OpenAI API..."):
                     try:
                         # Test with a simple call first
-                        test_result = call_openai("Say 'Hello World' in one word.")
+                        test_result = call_openai_api("Say 'Hello World' in one word.")
                         if test_result:
                             st.success(f"✅ API Test Successful: {test_result}")
                         else:
@@ -878,39 +926,28 @@ def main():
                     st.info(f"🔍 Attempting OpenAI API call with model fallback...")
                     
                     try:
-                        result = call_openai(prompt)
-                        if result:
-                            # Parse the result using our schema
-                            analysis_result = parse_openai_response(result, entity, category)
-                            
-                            # Validate the result
-                            if validate_result(analysis_result):
-                                st.success("✅ Analysis completed successfully with valid schema!")
-                            else:
-                                st.warning("⚠️ Analysis completed but schema validation failed - using fallback")
-                                analysis_result = get_fallback_result(entity, "Schema validation failed")
-                            
-                            # Store in session state for recent analyses
-                            if 'recent_analyses' not in st.session_state:
-                                st.session_state.recent_analyses = []
-                            
-                            st.session_state.recent_analyses.append({
-                                'entity': normalized_entity,
-                                'score': analysis_result['overall_score'],
-                                'timestamp': datetime.now()
-                            })
-                            
-                            # Display results
-                            display_results(analysis_result)
-                            return
+                        result = analyze_with_openai(normalized_entity, category_hint)
+                        
+                        # Validate the result
+                        if validate_result(result):
+                            st.success("✅ Analysis completed successfully with valid schema!")
                         else:
-                            # Show specific error information
-                            st.error("❌ OpenAI API call returned no result")
-                            st.info("💡 **Next Steps:**")
-                            st.info("1. Use the '🧪 Test API Key' button above to test your key")
-                            st.info("2. Check the error message that should appear above")
-                            st.info("3. Verify your API key has credits and access")
-                            return
+                            st.warning("⚠️ Analysis completed but schema validation failed - using fallback")
+                            result = get_fallback_result(normalized_entity, "Schema validation failed")
+                        
+                        # Store in session state for recent analyses
+                        if 'recent_analyses' not in st.session_state:
+                            st.session_state.recent_analyses = []
+                        
+                        st.session_state.recent_analyses.append({
+                            'entity': normalized_entity,
+                            'score': result['overall_score'],
+                            'timestamp': datetime.now()
+                        })
+                        
+                        # Display results
+                        display_results(result)
+                        return
                     except Exception as e:
                         st.error(f"❌ Error during OpenAI API call: {str(e)}")
                         st.info("💡 **Error Details:**")
