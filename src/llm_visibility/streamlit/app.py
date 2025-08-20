@@ -85,7 +85,9 @@ def call_openai(prompt: str) -> str | None:
             temperature=0.2,
         )
         return resp.choices[0].message.content
-    except Exception:
+    except Exception as e:
+        # Log the error for debugging
+        st.error(f"OpenAI API call failed: {str(e)}")
         return None
 
 # Page configuration
@@ -416,6 +418,16 @@ def main():
     with col2:
         if st.button("🔄 Refresh Detection"):
             st.rerun()
+        if st.button("🧪 Test API Key"):
+            if "OpenAI" in ENABLED:
+                with st.spinner("Testing OpenAI API..."):
+                    test_result = call_openai("Say 'Hello World' in one word.")
+                    if test_result:
+                        st.success(f"✅ API Test Successful: {test_result}")
+                    else:
+                        st.error("❌ API Test Failed - check the error above")
+            else:
+                st.warning("No OpenAI API key available for testing")
     
     # Debug info (temporary - remove later)
     if st.checkbox("🔍 Show Debug Info"):
@@ -569,6 +581,10 @@ def main():
                     st.info("Running in simulation mode - no API keys available")
                 else:
                     st.warning("API call failed. Check your API keys and try again.")
+                    st.info("💡 **Troubleshooting Tips:**")
+                    st.info("1. Verify your API key is valid and has credits")
+                    st.info("2. Check if the model 'gpt-4o-mini' is available")
+                    st.info("3. Ensure your OpenAI account has access to the API")
                 
                 # For now, show a simple message
                 st.info("Analysis completed. Check the results above.")
