@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.Python
+build/
+dist/
+pip-wheel-metadata/
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# FastAPI / Uvicorn
+*.log
+uvicorn.log
+
+# Test & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.pyright/
+
+# Caches
+.cache/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors/IDE
+.vscode/
+.idea/
+*.swp
+
+# Frontend
+node_modules/
+*.map
+frontend/.cache/
+
+# Local data & misc
+*.sqlite3
+logs/ 
