@@ -7,132 +7,8 @@ from datetime import datetime
 import time
 import os
 import re
-import asyncio
 from typing import Any, Dict, List, Optional, Tuple
-
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
-
-# Try to get API keys from Streamlit secrets (for cloud deployment)
-try:
-    import streamlit as st
-    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
-    ANTHROPIC_API_KEY = st.secrets.get("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY"))
-    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
-except:
-    # Fallback to environment variables
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Check if we have real API keys
-HAS_REAL_APIS = any([OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY])
-
-# ---------- Real LLM Provider Classes (when API keys available) ----------
-
-class OpenAIProvider:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        try:
-            from openai import OpenAI
-            self.client = OpenAI(api_key=api_key)
-            self.available = True
-        except ImportError:
-            self.available = False
-        except Exception:
-            self.available = False
-    
-    async def ask_json(self, prompt: str, entity: str) -> Optional[Dict[str, Any]]:
-        if not self.available:
-            return None
-            
-        try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are an AI visibility analyst. Respond with valid JSON only."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                max_tokens=1000
-            )
-            
-            content = response.choices[0].message.content
-            return try_parse_json(content)
-        except Exception as e:
-            st.error(f"OpenAI API Error: {str(e)}")
-            return None
-
-class AnthropicProvider:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        try:
-            import anthropic
-            self.client = anthropic.Anthropic(api_key=api_key)
-            self.available = True
-        except ImportError:
-            self.available = False
-        except Exception:
-            self.available = False
-    
-    async def ask_json(self, prompt: str, entity: str) -> Optional[Dict[str, Any]]:
-        if not self.available:
-            return None
-            
-        try:
-            response = self.client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1000,
-                temperature=0.1,
-                system="You are an AI visibility analyst. Respond with valid JSON only.",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            content = response.content[0].text
-            return try_parse_json(content)
-        except Exception as e:
-            st.error(f"Anthropic API Error: {str(e)}")
-            return None
-
-class GeminiProvider:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
-            self.available = True
-        except ImportError:
-            self.available = False
-        except Exception:
-            self.available = False
-    
-    async def ask_json(self, prompt: str, entity: str) -> Optional[Dict[str, Any]]:
-        if not self.available:
-            return None
-            
-        try:
-            response = self.model.generate_content(
-                prompt + "\n\nRespond with valid JSON only.",
-                generation_config={"temperature": 0.1}
-            )
-            
-            content = response.text
-            return try_parse_json(content)
-        except Exception as e:
-            st.error(f"Gemini API Error: {str(e)}")
-            return None
-
-# Initialize providers if API keys are available
-providers = {}
-if OPENAI_API_KEY:
-    providers["openai"] = OpenAIProvider(OPENAI_API_KEY)
-if ANTHROPIC_API_KEY:
-    providers["anthropic"] = AnthropicProvider(ANTHROPIC_API_KEY)
-if GEMINI_API_KEY:
-    providers["gemini"] = GeminiProvider(GEMINI_API_KEY)
+from contextlib import suppress
 
 # Page configuration
 st.set_page_config(
@@ -190,7 +66,99 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- LLM Analysis Logic (Direct Implementation) ----------
+# ---- Provider Discovery ------------------------------------------------------
+def get_secret(name: str) -> str | None:
+    with suppress(Exception):
+        v = st.secrets.get(name)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+PROVIDERS = {
+    "openai": {"key_name": "OPENAI_API_KEY"},
+    "anthropic": {"key_name": "ANTHROPIC_API_KEY"},
+    "gemini": {"key_name": "GEMINI_API_KEY"},
+}
+
+ENABLED = {p: get_secret(cfg["key_name"]) for p, cfg in PROVIDERS.items()}
+ENABLED = {p: k for p, k in ENABLED.items() if k}  # keep only those with keys
+
+# Determine mode
+SIMULATION_MODE = not bool(ENABLED)
+
+# ---- Safe Wrapper Functions (only call if enabled; never raise to UI) -------
+def call_openai(prompt: str) -> str | None:
+    if "openai" not in ENABLED:
+        return None
+    try:
+        # import here so missing packages don't error when provider disabled
+        from openai import OpenAI
+        import httpx
+        client = OpenAI(
+            api_key=ENABLED["openai"],
+            http_client=httpx.Client(timeout=20)
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an AI visibility analyst. Respond with valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=1000
+        )
+        return resp.choices[0].message.content
+    except Exception:
+        # Silently skip on failure; you can log if you want
+        return None
+
+def call_anthropic(prompt: str) -> str | None:
+    if "anthropic" not in ENABLED:
+        return None
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ENABLED["anthropic"])
+        msg = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1000,
+            temperature=0.1,
+            system="You are an AI visibility analyst. Respond with valid JSON only.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        # join text parts
+        return "".join(getattr(b, "text", "") for b in msg.content)
+    except Exception:
+        return None
+
+def call_gemini(prompt: str) -> str | None:
+    if "gemini" not in ENABLED:
+        return None
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=ENABLED["gemini"])
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        response = model.generate_content(
+            prompt + "\n\nRespond with valid JSON only.",
+            generation_config={"temperature": 0.1}
+        )
+        return response.text
+    except Exception:
+        return None
+
+# ---- Use only enabled providers; aggregate cleanly ---------------------------
+def analyze_with_real_apis(prompt: str) -> dict[str, str]:
+    """Analyze using real LLM APIs - clean aggregation"""
+    results = {}
+    o = call_openai(prompt)
+    if o: results["openai"] = o
+    a = call_anthropic(prompt)
+    if a: results["anthropic"] = a
+    g = call_gemini(prompt)
+    if g: results["gemini"] = g
+    return results
+
+# ---- Utility Functions -----------------------------------------------------
 
 def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     """Try to parse strict JSON. If it fails, attempt to repair by extracting the
@@ -240,7 +208,7 @@ def visibility_from_subscores(subscores: Dict[str, float]) -> float:
     return round(100.0 * clamp01(base * mult), 1)
 
 def simulate_llm_analysis(entity: str, category: Optional[str] = None) -> Dict[str, Any]:
-    """Simulate LLM analysis with realistic scoring"""
+    """Simulate LLM analysis with realistic scoring (fallback mode)"""
     # Generate deterministic but realistic scores based on entity
     seed = seed_from_string(entity + "|" + (category or ""))
     
@@ -336,94 +304,81 @@ def simulate_llm_analysis(entity: str, category: Optional[str] = None) -> Dict[s
         "industry_rank": industry_rank,
         "providers": [
             {
-                "provider": "openai",
-                "model": "gpt-4o-mini",
+                "provider": "simulation",
+                "model": "simulated-analysis",
                 "overall": overall,
                 "subscores": subscores
             }
         ],
         "notes": [
             f"Analysis based on simulated LLM responses for {entity}",
-            "Scores reflect typical recognition patterns across major AI models"
+            "Scores reflect typical recognition patterns across major AI models",
+            "Add API keys to .streamlit/secrets.toml for real analysis"
         ]
     }
 
-def analyze_visibility(entity: str, category: Optional[str], providers: List[str]) -> Dict[str, Any]:
-    """Analyze entity visibility using real APIs or simulation"""
+def analyze_visibility(entity: str, category: Optional[str], selected_providers: List[str]) -> Dict[str, Any]:
+    """Main analysis function - automatically chooses real APIs or simulation"""
     
-    # If we have real API keys and selected providers, use them
-    if HAS_REAL_APIS and any(p in providers for p in ["openai", "anthropic", "gemini"]):
-        return asyncio.run(analyze_with_real_apis(entity, category, providers))
-    else:
-        # Fallback to simulation
-        time.sleep(1)
-        return simulate_llm_analysis(entity, category)
-
-async def analyze_with_real_apis(entity: str, category: Optional[str], selected_providers: List[str]) -> Dict[str, Any]:
-    """Analyze using real LLM APIs"""
-    
-    # Create analysis prompt
-    prompt = f"""
-    Analyze the visibility of "{entity}" in the {category or 'general'} space.
-    
-    Provide a JSON response with this structure:
-    {{
-        "summary": "Brief description of the entity",
-        "facts": ["fact1", "fact2", "fact3"],
-        "competitors": ["competitor1", "competitor2"],
-        "industry_rank": 5,
-        "subscores": {{
-            "recognition": 0.85,
-            "detail": 0.75,
-            "context": 0.8,
-            "competitors": 0.9,
-            "consistency": 0.85
+    if not SIMULATION_MODE and selected_providers:
+        # Use real APIs
+        prompt = f"""
+        Analyze the visibility of "{entity}" in the {category or 'general'} space.
+        
+        Provide a JSON response with this structure:
+        {{
+            "summary": "Brief description of the entity",
+            "facts": ["fact1", "fact2", "fact3"],
+            "competitors": ["competitor1", "competitor2"],
+            "industry_rank": 5,
+            "subscores": {{
+                "recognition": 0.85,
+                "detail": 0.75,
+                "context": 0.8,
+                "competitors": 0.9,
+                "consistency": 0.85
+            }}
         }}
-    }}
-    
-    Base scores on how well-known and detailed the information is about this entity.
-    """
-    
-    results = {}
-    provider_results = []
-    
-    # Query each selected provider
-    for provider_name in selected_providers:
-        if provider_name in providers:
-            provider = providers[provider_name]
-            result = await provider.ask_json(prompt, entity)
+        
+        Base scores on how well-known and detailed the information is about this entity.
+        """
+        
+        # Get real API results
+        api_results = analyze_with_real_apis(prompt)
+        
+        if api_results:
+            # Process first successful result
+            provider_name = list(api_results.keys())[0]
+            result_text = api_results[provider_name]
+            result = try_parse_json(result_text)
             
             if result:
-                results[provider_name] = result
-                provider_results.append({
-                    "provider": provider_name,
-                    "model": provider_name,
+                return {
+                    "entity": entity,
+                    "category": category or "auto-detected",
                     "overall": visibility_from_subscores(result.get("subscores", {})),
-                    "subscores": result.get("subscores", {})
-                })
+                    "subscores": result.get("subscores", {}),
+                    "summary": result.get("summary", ""),
+                    "facts": result.get("facts", []),
+                    "competitors": result.get("competitors", []),
+                    "industry_rank": result.get("industry_rank", 10),
+                    "providers": [
+                        {
+                            "provider": provider_name,
+                            "model": provider_name,
+                            "overall": visibility_from_subscores(result.get("subscores", {})),
+                            "subscores": result.get("subscores", {})
+                        }
+                    ],
+                    "notes": [
+                        f"Analysis using real LLM API: {provider_name}",
+                        "Scores based on actual AI model response"
+                    ]
+                }
     
-    # If no real API results, fallback to simulation
-    if not results:
-        return simulate_llm_analysis(entity, category)
-    
-    # Combine results (for now, use first successful result as base)
-    first_result = list(results.values())[0]
-    
-    return {
-        "entity": entity,
-        "category": category or "auto-detected",
-        "overall": visibility_from_subscores(first_result.get("subscores", {})),
-        "subscores": first_result.get("subscores", {}),
-        "summary": first_result.get("summary", ""),
-        "facts": first_result.get("facts", []),
-        "competitors": first_result.get("competitors", []),
-        "industry_rank": first_result.get("industry_rank", 10),
-        "providers": provider_results,
-        "notes": [
-            f"Analysis using real LLM APIs: {', '.join(selected_providers)}",
-            "Scores based on actual AI model responses"
-        ]
-    }
+    # Fallback to simulation
+    time.sleep(1)
+    return simulate_llm_analysis(entity, category)
 
 # ---------- Streamlit UI Functions ----------
 
@@ -494,33 +449,40 @@ def main():
         st.header("⚙️ Configuration")
         
         # Status indicator
-        if HAS_REAL_APIS:
-            st.success("✅ Real LLM APIs Available")
-            st.info(f"Connected to: {', '.join(providers.keys())}")
+        if SIMULATION_MODE:
+            st.warning("Using Simulation Mode — add API keys to enable real calls.")
         else:
-            st.warning("⚠️ Using Simulation Mode")
-            st.info("Add API keys to .streamlit/secrets.toml for real analysis")
+            st.success("Real analysis enabled (API keys detected)")
         
         st.divider()
         
         # Provider Selection
         st.subheader("🤖 LLM Providers")
         
-        if HAS_REAL_APIS:
-            # Real providers
-            openai_enabled = st.checkbox("OpenAI (GPT-4o)", value="openai" in providers)
-            anthropic_enabled = st.checkbox("Anthropic (Claude)", value="anthropic" in providers)
-            gemini_enabled = st.checkbox("Google (Gemini)", value="gemini" in providers)
+        # Show provider status (clean approach)
+        for p in PROVIDERS:
+            if p in ENABLED:
+                st.write(f"✅ {p.capitalize()} enabled")
+            else:
+                st.write(f"⚪ {p.capitalize()} (no key)")
+        
+        st.divider()
+        
+        if not SIMULATION_MODE:
+            # Real providers - let user select which to use
+            openai_enabled = st.checkbox("OpenAI (GPT-4o)", value="openai" in ENABLED)
+            anthropic_enabled = st.checkbox("Anthropic (Claude)", value="anthropic" in ENABLED)
+            gemini_enabled = st.checkbox("Google (Gemini)", value="gemini" in ENABLED)
             
             providers_selected = []
-            if openai_enabled and "openai" in providers:
+            if openai_enabled and "openai" in ENABLED:
                 providers_selected.append("openai")
-            if anthropic_enabled and "anthropic" in providers:
+            if anthropic_enabled and "anthropic" in ENABLED:
                 providers_selected.append("anthropic")
-            if gemini_enabled and "gemini" in providers:
+            if gemini_enabled and "gemini" in ENABLED:
                 providers_selected.append("gemini")
         else:
-            # Simulation mode
+            # Simulation mode - all providers enabled
             st.info("Simulation mode - all providers enabled")
             providers_selected = ["openai", "anthropic", "gemini"]
             

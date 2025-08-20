@@ -17,3 +17,4 @@ orjson>=3.9.0
 # 1. Add your API keys to .streamlit/secrets.toml
 # 2. The app will automatically use real APIs if keys are available
 # 3. Falls back to simulation mode if no keys are provided
+# 4. httpx is used for timeout handling in OpenAI client
