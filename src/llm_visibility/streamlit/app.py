@@ -21,32 +21,28 @@ from llm_visibility.utils.analysis import analyze_visibility
 # ---- Robust Secret Detection -------------------------------------------------
 
 def _find_in_mapping(d: Mapping, name: str):
-    """Recursive search for `name` inside nested secrets dicts"""
-    if not isinstance(d, Mapping):
+    if not isinstance(d, Mapping): 
         return None
     if name in d:
         v = d[name]
-        if isinstance(v, str) and v.strip():
+        if isinstance(v, str) and v.strip(): 
             return v.strip()
     for v in d.values():
         if isinstance(v, Mapping):
             found = _find_in_mapping(v, name)
-            if found:
+            if found: 
                 return found
     return None
 
 def get_secret_or_env(name: str) -> str | None:
-    """Get secret from st.secrets (any nesting level) or fallback to environment variable"""
-    # 1) search st.secrets at any nesting level
     try:
         found = _find_in_mapping(st.secrets, name)
-        if found:
+        if found: 
             return found
     except Exception:
         pass
-    # 2) fallback to environment variable (useful locally / alt hosts)
-    val = os.getenv(name)
-    return val.strip() if isinstance(val, str) and val.strip() else None
+    v = os.getenv(name)
+    return v.strip() if isinstance(v, str) and v.strip() else None
 
 # ---- Provider Configuration --------------------------------------------------
 
@@ -59,8 +55,26 @@ ENABLED = {name: cfg["key"] for name, cfg in PROVIDERS.items() if cfg["key"]}
 SIMULATION_MODE = len(ENABLED) == 0
 
 # ---- Debug Info (Safe for Production) --------------------------------------
-st.caption("Secrets detected: " + ", ".join(sorted(st.secrets.keys())))
+st.caption("Secrets present: " + ", ".join(sorted(getattr(st, "secrets", {}).keys())))
 st.caption("Enabled providers: " + ", ".join(sorted(ENABLED.keys())) if ENABLED else "Enabled providers: none")
+
+# ---- Fail-Safe Provider Calls ----------------------------------------------
+
+def call_openai(prompt: str) -> str | None:
+    if "OpenAI" not in ENABLED:
+        return None
+    try:
+        from openai import OpenAI
+        import httpx
+        client = OpenAI(api_key=ENABLED["OpenAI"], http_client=httpx.Client(timeout=20))
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        return resp.choices[0].message.content
+    except Exception:
+        return None
 
 # Page configuration
 st.set_page_config(
