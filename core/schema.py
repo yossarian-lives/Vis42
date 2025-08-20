@@ -68,6 +68,12 @@ def validate_result(data: Dict[str, Any]) -> bool:
         if data["overall_score"] < 0 or data["overall_score"] > 100:
             return False
         
+        # Check notes length
+        if not isinstance(data["notes"], str):
+            return False
+        if len(data["notes"]) > 600:
+            return False
+        
         # Check sources
         if not isinstance(data["sources"], list):
             return False
