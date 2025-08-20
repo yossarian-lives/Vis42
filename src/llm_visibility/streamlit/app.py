@@ -15,8 +15,8 @@ import os
 # Add the src directory to the path so we can import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-from src.llm_visibility.utils.providers import PROVIDERS, ENABLED, SIMULATION_MODE
-from src.llm_visibility.utils.analysis import analyze_visibility
+from llm_visibility.utils.providers import PROVIDERS, ENABLED, SIMULATION_MODE
+from llm_visibility.utils.analysis import analyze_visibility
 
 # Page configuration
 st.set_page_config(
