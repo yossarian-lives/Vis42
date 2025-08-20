@@ -11,9 +11,9 @@
 
 1. **Create `.streamlit/secrets.toml`** in your repository:
 ```toml
-OPENAI_API_KEY = "sk-your-actual-openai-key"
-ANTHROPIC_API_KEY = "anthropic-your-actual-key"
-GEMINI_API_KEY = "AIza-your-actual-gemini-key"
+OPENAI_API_KEY = "sk-your-openai-api-key-here"
+ANTHROPIC_API_KEY = "sk-ant-your-anthropic-key-here"
+GEMINI_API_KEY = "AIza-your-gemini-key-here"
 ```
 
 2. **Add to Streamlit Cloud:**

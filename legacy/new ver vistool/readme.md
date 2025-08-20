@@ -210,9 +210,9 @@ docker run -p 5051:5051 \
 1. **Environment Variables**:
 ```bash
 # Required API keys
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-GEMINI_API_KEY=...
+OPENAI_API_KEY=sk-your-openai-api-key-here
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+GEMINI_API_KEY=your-gemini-key-here
 
 # Optional configuration
 REQUEST_TIMEOUT_SEC=25
