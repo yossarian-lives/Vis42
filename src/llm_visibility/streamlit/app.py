@@ -431,11 +431,16 @@ def main():
         if st.button("🧪 Test API Key"):
             if "OpenAI" in ENABLED:
                 with st.spinner("Testing OpenAI API..."):
-                    test_result = call_openai("Say 'Hello World' in one word.")
-                    if test_result:
-                        st.success(f"✅ API Test Successful: {test_result}")
-                    else:
-                        st.error("❌ API Test Failed - check the error above")
+                    try:
+                        # Test with a simple call first
+                        test_result = call_openai("Say 'Hello World' in one word.")
+                        if test_result:
+                            st.success(f"✅ API Test Successful: {test_result}")
+                        else:
+                            st.error("❌ API Test Failed - check the error above")
+                    except Exception as e:
+                        st.error(f"❌ Test failed with exception: {str(e)}")
+                        st.info(f"Exception type: {type(e).__name__}")
             else:
                 st.warning("No OpenAI API key available for testing")
     
