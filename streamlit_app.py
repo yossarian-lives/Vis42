@@ -1,1086 +1,25 @@
 """
-LLM Visibility Analyzer - Streamlit Application
-
-Professional Streamlit app with clean modular imports and beautiful UI.
+LLM Visibility Analyzer - Main Streamlit Application
 """
 
 import streamlit as st
-import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+import plotly.express as px
+import pandas as pd
+from typing import Dict, Any
 import sys
 import os
-from collections.abc import Mapping
-from typing import Optional, Dict, Any, List
-import re
-import json
-import statistics
 
-# ---- Schema and Validation --------------------------------------------------
+# Add current directory to path for imports
+sys.path.append(os.path.dirname(__file__))
 
-# Unified schema that all providers MUST return
-VISIBILITY_SCHEMA = {
-    "type": "object",
-    "required": ["entity", "category", "overall_score", "breakdown", "notes", "sources"],
-    "properties": {
-        "entity": {"type": "string"},
-        "category": {"type": "string"},
-        "overall_score": {"type": "number", "minimum": 0, "maximum": 100},
-        "breakdown": {
-            "type": "object",
-            "required": ["recognition", "media", "context", "competitors", "consistency"],
-            "properties": {
-                "recognition": {"type": "number", "minimum": 0, "maximum": 100},
-                "media": {"type": "number", "minimum": 0, "maximum": 100},
-                "context": {"type": "number", "minimum": 0, "maximum": 100},
-                "competitors": {"type": "number", "minimum": 0, "maximum": 100},
-                "consistency": {"type": "number", "minimum": 0, "maximum": 100}
-            },
-            "additionalProperties": False
-        },
-        "notes": {"type": "string", "maxLength": 600},
-        "sources": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 8
-        }
-    },
-    "additionalProperties": False
-}
-
-def validate_result(data: dict) -> bool:
-    """Validate that a result matches our schema"""
-    try:
-        # Simple validation without external jsonschema dependency
-        if not isinstance(data, dict):
-            return False
-        
-        required_fields = ["entity", "category", "overall_score", "breakdown", "notes", "sources"]
-        for field in required_fields:
-            if field not in data:
-                return False
-        
-        # Validate breakdown
-        breakdown = data.get("breakdown", {})
-        breakdown_fields = ["recognition", "media", "context", "competitors", "consistency"]
-        for field in breakdown_fields:
-            if field not in breakdown:
-                return False
-            if not isinstance(breakdown[field], (int, float)) or breakdown[field] < 0 or breakdown[field] > 100:
-                return False
-        
-        # Validate overall_score
-        if not isinstance(data["overall_score"], (int, float)) or data["overall_score"] < 0 or data["overall_score"] > 100:
-            return False
-        
-        return True
-    except Exception:
-        return False
-
-def get_fallback_result(entity: str, reason: str = "Structured fallback due to unparseable provider output.") -> dict:
-    """Return a structured fallback result when providers fail"""
-    return {
-        "entity": entity,
-        "category": "unknown",
-        "overall_score": 40,
-        "breakdown": {
-            "recognition": 40,
-            "media": 40,
-            "context": 40,
-            "competitors": 40,
-            "consistency": 60
-        },
-        "notes": reason,
-        "sources": []
-    }
-
-# ---- Robust Secret Detection -------------------------------------------------
-
-def _find_in_mapping(d: Mapping, name: str):
-    if not isinstance(d, Mapping): 
-        return None
-    if name in d:
-        v = d[name]
-        if isinstance(v, str) and v.strip(): 
-            return v.strip()
-    for v in d.values():
-        if isinstance(v, Mapping):
-            found = _find_in_mapping(v, name)
-            if found: 
-                return found
-    return None
-
-def get_secret_or_env(name: str) -> str | None:
-    """Get secret from st.secrets (any nesting level) or fallback to environment variable"""
-    # First try direct access to st.secrets
-    try:
-        if hasattr(st, 'secrets') and name in st.secrets:
-            value = st.secrets[name]
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    except Exception:
-        pass
-    
-    # Then try recursive search in nested secrets
-    try:
-        found = _find_in_mapping(st.secrets, name)
-        if found: 
-            return found
-    except Exception:
-        pass
-    
-    # Finally fallback to environment variable
-    v = os.getenv(name)
-    return v.strip() if isinstance(v, str) and v.strip() else None
-
-# ---- Provider Configuration --------------------------------------------------
-
-PROVIDERS = {
-    "OpenAI":    {"key": get_secret_or_env("OPENAI_API_KEY")},
-    "Anthropic": {"key": get_secret_or_env("ANTHROPIC_API_KEY")},
-    "Gemini":    {"key": get_secret_or_env("GEMINI_API_KEY")},
-}
-ENABLED = {name: cfg["key"] for name, cfg in PROVIDERS.items() if cfg["key"]}
-SIMULATION_MODE = len(ENABLED) == 0
-
-# ---- Fail-Safe Provider Calls ----------------------------------------------
-
-# ---- OpenAI Provider Adapter ------------------------------------------------
-
-def get_openai_key() -> Optional[str]:
-    """Get OpenAI API key from environment"""
-    return os.getenv('OPENAI_API_KEY')
-
-def call_openai_api(prompt: str) -> Optional[str]:
-    """Make API call to OpenAI with timeout and error handling"""
-    try:
-        from openai import OpenAI
-        import httpx
-        
-        api_key = get_openai_key()
-        if not api_key:
-            return None
-            
-        client = OpenAI(
-            api_key=api_key,
-            http_client=httpx.Client(timeout=20.0)
-        )
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system", 
-                    "content": "You are a visibility analyst. Return ONLY valid JSON matching the exact schema requested. No markdown, no explanations."
-                },
-                {
-                    "role": "user", 
-                    "content": prompt
-                }
-            ],
-            temperature=0.3,
-            max_tokens=800,
-            response_format={"type": "json_object"}
-        )
-        
-        return response.choices[0].message.content
-        
-    except Exception as e:
-        # Log error but don't crash
-        print(f"OpenAI API error: {str(e)}")
-        return None
-
-def analyze_with_openai(entity: str, category: str) -> Dict[str, Any]:
-    """
-    Analyze entity visibility using OpenAI API.
-    
-    Args:
-        entity: Entity name (normalized)
-        category: Category hint
-        
-    Returns:
-        Dict matching unified schema or structured fallback
-    """
-    prompt = make_prompt(entity, category)
-    
-    # Make API call
-    response_text = call_openai_api(prompt)
-    
-    if not response_text:
-        return get_fallback_result(entity, "OpenAI API call failed or timed out.")
-    
-    # Try to parse JSON
-    result = coerce_json(response_text)
-    
-    if not result:
-        return get_fallback_result(entity, "Could not parse OpenAI response as valid JSON.")
-    
-    # Validate against schema
-    if not validate_result(result):
-        return get_fallback_result(entity, "OpenAI response did not match required schema.")
-    
-    return result
-
-def make_prompt(entity: str, category_hint: str) -> str:
-    """
-    Create a prompt that forces JSON-only output with strict schema compliance.
-    
-    Args:
-        entity: The entity to analyze (e.g., "Vuori")
-        category_hint: Category context (e.g., "consumer apparel / activewear")
-    
-    Returns:
-        Complete prompt string that enforces JSON output
-    """
-    
-    prompt = f"""Analyze the visibility of "{entity}" in the {category_hint} space across LLM knowledge bases.
-
-DEFINITION OF VISIBILITY:
-- Breadth: How widely known across different AI models and contexts
-- Freshness: How current and up-to-date the information is
-- Depth/Accuracy: Level of detailed, accurate information available
-- Hallucination penalty: Deduct points for inconsistent or made-up information
-
-SCORING METHODOLOGY (0-100 for each):
-- Recognition: How well LLMs recognize and identify this entity
-- Media: Coverage in news, articles, and media mentions
-- Context: Understanding of industry position and relationships
-- Competitors: Awareness of alternatives and competitive landscape  
-- Consistency: Stability and agreement across different queries/models
-
-You MUST return ONLY valid minified JSON that matches this exact schema. No markdown, no code fences, no commentary:
-
-{{"entity":"{entity}","category":"{category_hint}","overall_score":85,"breakdown":{{"recognition":80,"media":75,"context":85,"competitors":90,"consistency":85}},"notes":"Brief analysis paragraph under 600 chars","sources":["domain1.com","brief-citation-2","source-3"]}}
-
-CRITICAL REQUIREMENTS:
-- Return ONLY the JSON object, nothing else
-- All scores must be integers 0-100
-- Notes must be under 600 characters
-- Sources should be domains or brief citations (max 8)
-- If uncertain, provide best-effort estimates and keep internal consistency
-- Calculate overall_score as weighted average: recognition(30%) + media(25%) + context(20%) + consistency(15%) + competitors(10%)
-
-Analyze "{entity}" now:"""
-    
-    return prompt
-
-# ---- Robust JSON Coercion Utilities -----------------------------------------
-
-def coerce_json(text: str) -> Optional[Dict[str, Any]]:
-    """
-    Robust JSON extraction from LLM text output.
-    
-    Attempts multiple strategies to extract valid JSON from potentially
-    messy LLM responses including markdown code fences, extra text, etc.
-    
-    Args:
-        text: Raw text from LLM provider
-        
-    Returns:
-        Parsed JSON dict or None if extraction fails
-    """
-    if not text or not isinstance(text, str):
-        return None
-    
-    text = text.strip()
-    
-    # Strategy 1: Try parsing directly
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    
-    # Strategy 2: Extract from code fences
-    code_fence_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-    if code_fence_match:
-        try:
-            return json.loads(code_fence_match.group(1))
-        except json.JSONDecodeError:
-            pass
-    
-    # Strategy 3: Find first balanced JSON object
-    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group(0))
-        except json.JSONDecodeError:
-            pass
-    
-    # Strategy 4: More aggressive extraction - find any { ... } block
-    brace_match = re.search(r'\{.*\}', text, re.DOTALL)
-    if brace_match:
-        candidate = brace_match.group(0)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
-    
-    # Strategy 5: Try to fix common JSON issues
-    try:
-        # Replace single quotes with double quotes
-        fixed_text = re.sub(r"'([^']*)':", r'"\1":', text)
-        fixed_text = re.sub(r": '([^']*)'", r': "\1"', fixed_text)
-        return json.loads(fixed_text)
-    except json.JSONDecodeError:
-        pass
-    
-    return None
-
-def sanitize_json_string(text: str) -> str:
-    """
-    Clean up a string to be JSON-safe.
-    
-    Args:
-        text: Input string that may contain problematic characters
-        
-    Returns:
-        JSON-safe string
-    """
-    if not isinstance(text, str):
-        return str(text)
-    
-    # Remove or escape problematic characters
-    text = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    text = re.sub(r'\s+', ' ', text)  # Collapse multiple spaces
-    text = text.strip()
-    
-    # Limit length
-    if len(text) > 500:
-        text = text[:497] + "..."
-    
-    return text
-
-def parse_openai_response(response: str, entity: str, category: str) -> dict:
-    """Parse OpenAI response and convert to structured schema format"""
-    try:
-        # Use the robust JSON coercion utility
-        parsed_data = coerce_json(response)
-        
-        if parsed_data:
-            # Validate the parsed data against our schema
-            if validate_result(parsed_data):
-                st.success("✅ Successfully parsed structured JSON response!")
-                return parsed_data
-            else:
-                st.warning("⚠️ JSON parsed but failed schema validation - using fallback")
-                # Try to fix common schema issues
-                fixed_data = fix_schema_issues(parsed_data, entity, category)
-                if validate_result(fixed_data):
-                    st.success("✅ Fixed schema issues and validated successfully!")
-                    return fixed_data
-        else:
-            st.info("ℹ️ No JSON found in response - using fallback parsing")
-        
-        # Fallback: extract structured information from text response
-        result = extract_from_text(response, entity, category)
-        return result
-        
-    except Exception as e:
-        st.warning(f"Failed to parse OpenAI response: {str(e)}")
-        return get_fallback_result(entity, f"Failed to parse response: {str(e)}")
-
-def fix_schema_issues(data: dict, entity: str, category: str) -> dict:
-    """Attempt to fix common schema validation issues"""
-    try:
-        # Ensure required fields exist
-        if "entity" not in data:
-            data["entity"] = entity
-        if "category" not in data:
-            data["category"] = category or "auto-detected"
-        if "overall_score" not in data:
-            data["overall_score"] = 50
-        
-        # Ensure breakdown exists and has all required fields
-        if "breakdown" not in data:
-            data["breakdown"] = {}
-        
-        required_breakdown_fields = ["recognition", "media", "context", "competitors", "consistency"]
-        for field in required_breakdown_fields:
-            if field not in data["breakdown"]:
-                data["breakdown"][field] = 50
-        
-        # Ensure notes and sources exist
-        if "notes" not in data:
-            data["notes"] = "Analysis completed"
-        if "sources" not in data:
-            data["sources"] = []
-        
-        # Sanitize strings
-        data["notes"] = sanitize_json_string(data["notes"])
-        
-        return data
-    except Exception:
-        return get_fallback_result(entity, "Failed to fix schema issues")
-
-def extract_from_text(response: str, entity: str, category: str) -> dict:
-    """Extract structured information from text when JSON parsing fails"""
-    # Default values
-    result = {
-        "entity": entity,
-        "category": category or "auto-detected",
-        "overall_score": 50,  # Default middle score
-        "breakdown": {
-            "recognition": 50,
-            "media": 50,
-            "context": 50,
-            "competitors": 50,
-            "consistency": 50
-        },
-        "notes": sanitize_json_string(response[:600]),  # Truncate and sanitize
-        "sources": []
-    }
-    
-    # Try to extract score if mentioned
-    score_match = re.search(r'(\d{1,3})/100|score[:\s]*(\d{1,3})|(\d{1,3})\s*out\s*of\s*100', response, re.IGNORECASE)
-    if score_match:
-        score = int(score_match.group(1) or score_match.group(2) or score_match.group(3))
-        if 0 <= score <= 100:
-            result["overall_score"] = score
-    
-    # Try to extract category if not provided
-    if not category or category == "auto-detected":
-        category_keywords = {
-            "Technology": ["tech", "software", "ai", "artificial intelligence", "machine learning"],
-            "Finance": ["finance", "banking", "investment", "crypto", "blockchain"],
-            "Healthcare": ["health", "medical", "pharma", "biotech"],
-            "Education": ["education", "learning", "academic", "university"],
-            "Entertainment": ["entertainment", "media", "gaming", "film", "music"],
-            "Consumer": ["consumer", "apparel", "fashion", "retail", "brand"],
-            "Business": ["business", "enterprise", "corporate", "startup", "company"]
-        }
-        
-        response_lower = response.lower()
-        for cat, keywords in category_keywords.items():
-            if any(keyword in response_lower for keyword in keywords):
-                result["category"] = cat
-                break
-    
-    return result
-
-# ---- Entity Normalization Utilities -----------------------------------------
-
-# Common entity name mappings
-ENTITY_MAPPINGS = {
-    "vouri": "Vuori",
-    "voui": "Vuori", 
-    "vuouri": "Vuori",
-    "tesla": "Tesla",
-    "apple": "Apple",
-    "microsoft": "Microsoft",
-    "google": "Google",
-    "amazon": "Amazon",
-    "meta": "Meta",
-    "openai": "OpenAI",
-    "anthropic": "Anthropic",
-    "chatgpt": "ChatGPT",
-    "gpt": "GPT",
-}
-
-# Category hints based on entity names
-ENTITY_CATEGORY_HINTS = {
-    "vuori": "consumer apparel / activewear",
-    "nike": "consumer apparel / athletic wear",
-    "adidas": "consumer apparel / athletic wear",
-    "lululemon": "consumer apparel / activewear",
-    "patagonia": "consumer apparel / outdoor gear",
-    "tesla": "automotive / electric vehicles",
-    "ford": "automotive",
-    "apple": "technology / consumer electronics",
-    "microsoft": "technology / software",
-    "google": "technology / internet services",
-    "amazon": "e-commerce / cloud computing",
-    "meta": "technology / social media",
-    "openai": "artificial intelligence",
-    "anthropic": "artificial intelligence",
-    "chatgpt": "artificial intelligence / language models",
-}
-
-def normalize_entity(entity: str) -> str:
-    """
-    Normalize entity name to handle common misspellings and formatting issues.
-    
-    Args:
-        entity: Raw entity name from user input
-        
-    Returns:
-        Normalized entity name
-    """
-    if not entity or not isinstance(entity, str):
-        return ""
-    
-    # Clean up the entity name
-    entity = entity.strip()
-    entity_lower = entity.lower()
-    
-    # Check for exact mappings first
-    if entity_lower in ENTITY_MAPPINGS:
-        return ENTITY_MAPPINGS[entity_lower]
-    
-    # Remove extra whitespace and normalize casing
-    entity = re.sub(r'\s+', ' ', entity)
-    
-    # If it's all uppercase, convert to title case
-    if entity.isupper() and len(entity) > 2:
-        entity = entity.title()
-    
-    # If it's all lowercase and looks like a proper noun, title case it
-    if entity.islower() and len(entity) > 2:
-        # Simple heuristic: if it doesn't contain common words, title case it
-        common_words = {'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
-        words = entity.split()
-        if len(words) <= 2 or not any(word in common_words for word in words):
-            entity = entity.title()
-    
-    return entity
-
-def guess_category_from_name(entity: str) -> str:
-    """
-    Guess entity category based on the entity name.
-    
-    Args:
-        entity: Normalized entity name
-        
-    Returns:
-        Category hint string
-    """
-    entity_lower = entity.lower()
-    
-    # Check for exact matches first
-    if entity_lower in ENTITY_CATEGORY_HINTS:
-        return ENTITY_CATEGORY_HINTS[entity_lower]
-    
-    # Pattern-based matching
-    if any(term in entity_lower for term in ['apparel', 'clothing', 'wear', 'fashion']):
-        return "consumer apparel"
-    
-    if any(term in entity_lower for term in ['tech', 'software', 'app', 'platform']):
-        return "technology"
-    
-    if any(term in entity_lower for term in ['car', 'auto', 'vehicle', 'motor']):
-        return "automotive"
-    
-    if any(term in entity_lower for term in ['ai', 'artificial', 'intelligence', 'ml', 'machine learning']):
-        return "artificial intelligence"
-    
-    if any(term in entity_lower for term in ['bio', 'pharma', 'health', 'medical']):
-        return "healthcare"
-    
-    if any(term in entity_lower for term in ['bank', 'finance', 'invest', 'fund']):
-        return "financial services"
-    
-    # Default fallback
-    return "brand"
-
-# ---- Web Enrichment Utilities -----------------------------------------------
-
-def get_search_api_key() -> tuple[Optional[str], Optional[str]]:
-    """Get available search API keys"""
-    tavily_key = os.getenv('TAVILY_API_KEY')
-    serper_key = os.getenv('SERPER_API_KEY')
-    return tavily_key, serper_key
-
-def search_with_tavily(entity: str, api_key: str) -> Optional[str]:
-    """Search using Tavily API"""
-    try:
-        import requests
-        
-        response = requests.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": api_key,
-                "query": f"{entity} company business",
-                "max_results": 3,
-                "search_depth": "basic"
-            },
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            results = data.get('results', [])
-            
-            # Extract text from results
-            text = ""
-            for result in results[:3]:
-                text += result.get('content', '') + " "
-                text += result.get('title', '') + " "
-            
-            return text.lower()
-    except Exception:
-        pass
-    
-    return None
-
-def search_with_serper(entity: str, api_key: str) -> Optional[str]:
-    """Search using Serper API"""
-    try:
-        import requests
-        
-        response = requests.post(
-            "https://google.serper.dev/search",
-            headers={"X-API-KEY": api_key},
-            json={
-                "q": f"{entity} company business",
-                "num": 3
-            },
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Extract text from organic results
-            text = ""
-            for result in data.get('organic', [])[:3]:
-                text += result.get('snippet', '') + " "
-                text += result.get('title', '') + " "
-            
-            return text.lower()
-    except Exception:
-        pass
-    
-    return None
-
-def detect_category_from_text(text: str) -> str:
-    """Detect category from search result text using keyword matching"""
-    if not text:
-        return "brand"
-    
-    text = text.lower()
-    
-    # Category detection patterns
-    patterns = {
-        "consumer apparel / activewear": [
-            "activewear", "apparel", "clothing", "athleisure", "retail", 
-            "fashion", "athletic wear", "sportswear", "fitness", "yoga"
-        ],
-        "technology": [
-            "software", "platform", "tech", "app", "digital", "saas",
-            "technology", "startup", "innovation", "developer"
-        ],
-        "automotive": [
-            "automotive", "car", "vehicle", "auto", "motor", "electric vehicle",
-            "transportation", "mobility", "tesla", "ford"
-        ],
-        "artificial intelligence": [
-            "ai", "artificial intelligence", "machine learning", "ml", 
-            "deep learning", "nlp", "chatbot", "openai"
-        ],
-        "healthcare": [
-            "healthcare", "medical", "health", "pharma", "biotech",
-            "medicine", "clinical", "patient"
-        ],
-        "financial services": [
-            "bank", "banking", "finance", "financial", "investment",
-            "fintech", "trading", "payment"
-        ]
-    }
-    
-    # Score each category
-    scores = {}
-    for category, keywords in patterns.items():
-        score = sum(1 for keyword in keywords if keyword in text)
-        if score > 0:
-            scores[category] = score
-    
-    # Return category with highest score
-    if scores:
-        return max(scores.items(), key=lambda x: x[1])[0]
-    
-    return "brand"
-
-def enhanced_guess_category(entity: str) -> str:
-    """
-    Enhanced category detection using web search if API keys available,
-    otherwise fall back to name-based detection.
-    
-    Args:
-        entity: Entity name to categorize
-        
-    Returns:
-        Category string
-    """
-    # First try name-based detection
-    name_based_category = guess_category_from_name(entity)
-    
-    # Try web search if API keys are available
-    tavily_key, serper_key = get_search_api_key()
-    
-    if tavily_key:
-        try:
-            with st.spinner("🔍 Searching web for better category detection..."):
-                search_text = search_with_tavily(entity, tavily_key)
-                if search_text:
-                    web_category = detect_category_from_text(search_text)
-                    # Prefer web-based category if it's more specific than name-based
-                    if web_category != "brand" or name_based_category == "brand":
-                        st.success(f"✅ Web search enhanced category: {web_category}")
-                        return web_category
-        except Exception as e:
-            st.warning(f"⚠️ Web search failed: {str(e)}")
-    
-    elif serper_key:
-        try:
-            with st.spinner("🔍 Searching web for better category detection..."):
-                search_text = search_with_serper(entity, serper_key)
-                if search_text:
-                    web_category = detect_category_from_text(search_text)
-                    # Prefer web-based category if it's more specific than name-based
-                    if web_category != "brand" or name_based_category == "brand":
-                        st.success(f"✅ Web search enhanced category: {web_category}")
-                        return web_category
-        except Exception as e:
-            st.warning(f"⚠️ Web search failed: {str(e)}")
-    
-    # Fall back to name-based category
-    return name_based_category
-
-# ---- Anthropic Provider Adapter ---------------------------------------------
-
-def get_anthropic_key() -> Optional[str]:
-    """Get Anthropic API key from environment"""
-    return os.getenv('ANTHROPIC_API_KEY')
-
-def call_anthropic_api(prompt: str) -> Optional[str]:
-    """Make API call to Anthropic with timeout and error handling"""
-    try:
-        import anthropic
-        import httpx
-        
-        api_key = get_anthropic_key()
-        if not api_key:
-            return None
-            
-        client = anthropic.Anthropic(
-            api_key=api_key,
-            http_client=httpx.Client(timeout=20.0)
-        )
-        
-        message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=800,
-            temperature=0.2,
-            system="You are a visibility analyst. Return ONLY valid JSON matching the exact schema requested. No markdown, no explanations.",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        )
-        
-        # Extract text from response
-        if hasattr(message, 'content') and message.content:
-            if isinstance(message.content, list) and len(message.content) > 0:
-                return message.content[0].text
-            elif hasattr(message.content, 'text'):
-                return message.content.text
-            else:
-                return str(message.content)
-        
-        return None
-        
-    except Exception as e:
-        # Log error but don't crash
-        print(f"Anthropic API error: {str(e)}")
-        return None
-
-def analyze_with_anthropic(entity: str, category: str) -> Dict[str, Any]:
-    """
-    Analyze entity visibility using Anthropic API.
-    
-    Args:
-        entity: Entity name (normalized)
-        category: Category hint
-        
-    Returns:
-        Dict matching unified schema or structured fallback
-    """
-    prompt = make_prompt(entity, category)
-    
-    # Make API call
-    response_text = call_anthropic_api(prompt)
-    
-    if not response_text:
-        return get_fallback_result(entity, "Anthropic API call failed or timed out.")
-    
-    # Try to parse JSON
-    result = coerce_json(response_text)
-    
-    if not result:
-        return get_fallback_result(entity, "Could not parse Anthropic response as valid JSON.")
-    
-    # Validate against schema
-    if not validate_result(result):
-        return get_fallback_result(entity, "Anthropic response did not match required schema.")
-    
-    return result
-
-# ---- Gemini Provider Adapter ------------------------------------------------
-
-def get_gemini_key() -> Optional[str]:
-    """Get Gemini API key from environment"""
-    return os.getenv('GEMINI_API_KEY')
-
-def call_gemini_api(prompt: str) -> Optional[str]:
-    """Make API call to Gemini with timeout and error handling"""
-    try:
-        import google.generativeai as genai
-        
-        api_key = get_gemini_key()
-        if not api_key:
-            return None
-            
-        genai.configure(api_key=api_key)
-        
-        # Configure the model
-        generation_config = {
-            "temperature": 0.2,
-            "top_p": 0.8,
-            "top_k": 40,
-            "max_output_tokens": 800,
-        }
-        
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-exp",
-            generation_config=generation_config,
-            system_instruction="You are a visibility analyst. Return ONLY valid JSON matching the exact schema requested. No markdown, no explanations."
-        )
-        
-        # Add JSON format instruction to prompt
-        enhanced_prompt = prompt + "\n\nIMPORTANT: Return ONLY the JSON object, no other text."
-        
-        response = model.generate_content(enhanced_prompt)
-        
-        if response and response.text:
-            return response.text
-        
-        return None
-        
-    except Exception as e:
-        # Log error but don't crash
-        print(f"Gemini API error: {str(e)}")
-        return None
-
-def analyze_with_gemini(entity: str, category: str) -> Dict[str, Any]:
-    """
-    Analyze entity visibility using Gemini API.
-    
-    Args:
-        entity: Entity name (normalized)
-        category: Category hint
-        
-    Returns:
-        Dict matching unified schema or structured fallback
-    """
-    prompt = make_prompt(entity, category)
-    
-    # Make API call
-    response_text = call_gemini_api(prompt)
-    
-    if not response_text:
-        return get_fallback_result(entity, "Gemini API call failed or timed out.")
-    
-    # Try to parse JSON
-    result = coerce_json(response_text)
-    
-    if not result:
-        return get_fallback_result(entity, "Could not parse Gemini response as valid JSON.")
-    
-    # Validate against schema
-    if not validate_result(result):
-        return get_fallback_result(entity, "Gemini response did not match required schema.")
-    
-    return result
-
-# ---- Multi-Provider Orchestrator -------------------------------------------
-
-def get_available_providers() -> Dict[str, bool]:
-    """Check which providers have API keys available"""
-    return {
-        "openai": bool(get_openai_key()),
-        "anthropic": bool(get_anthropic_key()),
-        "gemini": bool(get_gemini_key())
-    }
-
-def calculate_overall_score(breakdown: Dict[str, int]) -> int:
-    """
-    Calculate overall score using weighted formula.
-    
-    Weights:
-    - Recognition: 30%
-    - Media: 25% 
-    - Context: 20%
-    - Consistency: 15%
-    - Competitors: 10%
-    """
-    weights = {
-        "recognition": 0.30,
-        "media": 0.25,
-        "context": 0.20,
-        "consistency": 0.15,
-        "competitors": 0.10
-    }
-    
-    weighted_sum = 0
-    for metric, weight in weights.items():
-        score = breakdown.get(metric, 40)
-        weighted_sum += score * weight
-    
-    return int(round(weighted_sum))
-
-def merge_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Merge multiple provider results using median scoring.
-    
-    Args:
-        results: List of provider results matching unified schema
-        
-    Returns:
-        Merged result with median scores
-    """
-    if not results:
-        return get_fallback_result("unknown", "No provider responded.")
-    
-    if len(results) == 1:
-        return results[0]
-    
-    # Use first result as base
-    base_result = results[0]
-    entity = base_result["entity"]
-    category = base_result["category"]
-    
-    # Collect all breakdown scores for median calculation
-    breakdown_scores = {
-        "recognition": [],
-        "media": [],
-        "context": [],
-        "competitors": [],
-        "consistency": []
-    }
-    
-    for result in results:
-        for metric, score in result["breakdown"].items():
-            if metric in breakdown_scores:
-                breakdown_scores[metric].append(score)
-    
-    # Calculate median scores
-    merged_breakdown = {}
-    for metric, scores in breakdown_scores.items():
-        merged_breakdown[metric] = int(statistics.median(scores)) if scores else 40
-    
-    # Calculate weighted overall score
-    overall_score = calculate_overall_score(merged_breakdown)
-    
-    # Merge notes (trim to 600 chars)
-    all_notes = []
-    for result in results:
-        if result.get("notes"):
-            all_notes.append(result["notes"])
-    
-    merged_notes = " | ".join(all_notes)[:600]
-    if len(" | ".join(all_notes)) > 600:
-        merged_notes = merged_notes.rsplit(" ", 1)[0] + "..."
-    
-    # Merge and deduplicate sources (cap at 8)
-    all_sources = []
-    for result in results:
-        all_sources.extend(result.get("sources", []))
-    
-    # Deduplicate while preserving order
-    unique_sources = []
-    seen = set()
-    for source in all_sources:
-        if source not in seen and len(unique_sources) < 8:
-            unique_sources.append(source)
-            seen.add(source)
-    
-    return {
-        "entity": entity,
-        "category": category,
-        "overall_score": overall_score,
-        "breakdown": merged_breakdown,
-        "notes": merged_notes or f"Merged analysis from {len(results)} providers.",
-        "sources": unique_sources
-    }
-
-def analyze_entity(raw_entity: str, selected_providers: List[str] = None) -> Dict[str, Any]:
-    """
-    Main orchestration function.
-    
-    Args:
-        raw_entity: Raw entity string from UI input
-        selected_providers: List of provider names to use (optional)
-        
-    Returns:
-        Final merged analysis result
-    """
-    if not raw_entity or not raw_entity.strip():
-        return get_fallback_result("", "Empty entity provided.")
-    
-    # Step 1: Normalize entity
-    normalized_entity = normalize_entity(raw_entity)
-    
-    # Step 2: Guess category  
-    category = enhanced_guess_category(normalized_entity)
-    
-    # Step 3: Determine available providers
-    available_providers = get_available_providers()
-    
-    if selected_providers:
-        # Filter to only selected and available providers
-        providers_to_use = [p.lower() for p in selected_providers if available_providers.get(p.lower(), False)]
-    else:
-        # Use all available providers
-        providers_to_use = [p for p, available in available_providers.items() if available]
-    
-    if not providers_to_use:
-        return get_fallback_result(normalized_entity, "No providers available - add API keys to enable real analysis.")
-    
-    # Step 4: Call each enabled adapter
-    results = []
-    
-    if "openai" in providers_to_use:
-        try:
-            with st.spinner("🔍 Analyzing with OpenAI..."):
-                result = analyze_with_openai(normalized_entity, category)
-                if result:
-                    results.append(result)
-                    st.success("✅ OpenAI analysis completed")
-        except Exception as e:
-            st.warning(f"⚠️ OpenAI analysis failed: {str(e)}")
-    
-    if "anthropic" in providers_to_use:
-        try:
-            with st.spinner("🔍 Analyzing with Anthropic..."):
-                result = analyze_with_anthropic(normalized_entity, category)
-                if result:
-                    results.append(result)
-                    st.success("✅ Anthropic analysis completed")
-        except Exception as e:
-            st.warning(f"⚠️ Anthropic analysis failed: {str(e)}")
-    
-    if "gemini" in providers_to_use:
-        try:
-            with st.spinner("🔍 Analyzing with Gemini..."):
-                result = analyze_with_gemini(normalized_entity, category)
-                if result:
-                    results.append(result)
-                    st.success("✅ Gemini analysis completed")
-        except Exception as e:
-            st.warning(f"⚠️ Gemini analysis failed: {str(e)}")
-    
-    # Step 5: Merge results or return fallback
-    if not results:
-        return get_fallback_result(normalized_entity, "All provider calls failed - check API keys and network connection.")
-    
-    # Step 6: Return merged result
-    if len(results) > 1:
-        st.info(f"🔄 Merging results from {len(results)} providers...")
-        return merge_results(results)
-    else:
-        return results[0]
+try:
+    from core.orchestrator import analyze_entity, get_available_providers
+    from core.enrich import guess_category
+except ImportError as e:
+    st.error(f"Import error: {e}")
+    st.error("Please ensure all required files are in the correct directories.")
+    st.stop()
 
 # Page configuration
 st.set_page_config(
@@ -1090,287 +29,408 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS for modern styling
 st.markdown("""
 <style>
     .main-header {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 2rem;
-        border-radius: 10px;
+        border-radius: 15px;
         color: white;
         text-align: center;
         margin-bottom: 2rem;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
     }
     .metric-card {
         background: white;
         padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        border-left: 4px solid #667eea;
+        border-radius: 12px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        border-left: 5px solid #667eea;
+        margin: 1rem 0;
     }
-    .badge {
-        background: #f0f2f6;
+    .provider-status {
         padding: 0.5rem 1rem;
         border-radius: 20px;
         display: inline-block;
-        margin: 1rem 0;
+        margin: 0.25rem;
         font-size: 0.9rem;
-        color: #667eea;
-        border: 1px solid #e1e5e9;
+        font-weight: 600;
     }
-    .score-chart {
-        background: white;
-        padding: 1rem;
-        border-radius: 10px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    .provider-enabled {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+    }
+    .provider-disabled {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+    }
+    .score-display {
+        font-size: 4rem;
+        font-weight: bold;
+        text-align: center;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    .breakdown-card {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
-def main():
-    # Main header
-    st.markdown('<div class="main-header"><h1>🔍 LLM Visibility Analyzer</h1><p>Professional brand & topic analysis across AI knowledge spaces</p></div>', unsafe_allow_html=True)
+def create_radar_chart(breakdown: Dict[str, int]) -> go.Figure:
+    """Create a radar chart for the breakdown scores"""
     
-    # Configuration section
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Debug info (temporary - remove later)
-        if st.checkbox("🔍 Show Debug Info"):
-            st.write("**Debug Information:**")
-            st.write(f"- SIMULATION_MODE: {SIMULATION_MODE}")
-            st.write(f"- ENABLED providers: {list(ENABLED.keys())}")
-            st.write(f"- OpenAI key present: {'Yes' if 'OpenAI' in ENABLED else 'No'}")
-            if 'OpenAI' in ENABLED:
-                st.write(f"- OpenAI key starts with: {ENABLED['OpenAI'][:10]}...")
-            
-            # Add more detailed debugging
-            st.write("**Secrets Debug:**")
-            try:
-                secrets_keys = list(st.secrets.keys()) if hasattr(st, 'secrets') else []
-                st.write(f"- st.secrets available: {'Yes' if hasattr(st, 'secrets') else 'No'}")
-                st.write(f"- st.secrets keys: {secrets_keys}")
-                if 'OPENAI_API_KEY' in secrets_keys:
-                    st.write(f"- OPENAI_API_KEY in secrets: Yes")
-                    st.write(f"- OPENAI_API_KEY starts with: {st.secrets['OPENAI_API_KEY'][:10]}...")
-                else:
-                    st.write(f"- OPENAI_API_KEY in secrets: No")
-            except Exception as e:
-                st.write(f"- Error accessing secrets: {str(e)}")
-            
-            st.write("**Environment Debug:**")
-            import os
-            env_openai = os.getenv('OPENAI_API_KEY')
-            st.write(f"- OPENAI_API_KEY in env: {'Yes' if env_openai else 'No'}")
-            if env_openai:
-                st.write(f"- Env OPENAI_API_KEY starts with: {env_openai[:10]}...")
-        
-        # Provider status
-        st.subheader("🤖 LLM Providers")
-        for p in ["OpenAI", "Anthropic", "Gemini"]:
-            if p in ENABLED:
-                st.markdown(f"✅ **{p}** enabled")
-            else:
-                st.markdown(f"⚪ **{p}** (no key)")
-        
-        # Web enrichment status
-        st.subheader("🌐 Web Enrichment")
-        tavily_key, serper_key = get_search_api_key()
-        if tavily_key:
-            st.markdown(f"✅ **Tavily** enabled")
-        elif serper_key:
-            st.markdown(f"✅ **Serper** enabled")
-        else:
-            st.markdown(f"⚪ **Web search** (no API keys)")
-            st.caption("Add TAVILY_API_KEY or SERPER_API_KEY for enhanced category detection")
-        
-        # Test API Key button
-        if st.button("🧪 Test API Key"):
-            if "OpenAI" in ENABLED:
-                with st.spinner("Testing OpenAI API..."):
-                    try:
-                        # Test with a simple call first
-                        test_result = call_openai_api("Say 'Hello World' in one word.")
-                        if test_result:
-                            st.success(f"✅ API Test Successful: {test_result}")
-                        else:
-                            st.error("❌ API Test Failed - check the error above")
-                    except Exception as e:
-                        st.error(f"❌ Test failed with exception: {str(e)}")
-                        st.info(f"Exception type: {type(e).__name__}")
-            else:
-                st.warning("No OpenAI API key available for testing")
-    
-    # Main content area
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown(
-            f"<span class='badge'>🔧 Configuration · "
-            f"{'Simulation Mode' if SIMULATION_MODE else 'Real Analysis Enabled'}</span>",
-            unsafe_allow_html=True
-        )
-    with col2:
-        if st.button("🔄 Refresh Detection"):
-            st.rerun()
-    
-    # Debug captions
-    st.caption("Secrets present: " + ", ".join(sorted(getattr(st, "secrets", {}).keys())))
-    st.caption("Enabled providers: " + ", ".join(sorted(ENABLED.keys())) if ENABLED else "Enabled providers: none")
-    
-    # Entity analysis section
-    st.header("🎯 Entity Analysis")
-    
-    # Input form
-    with st.form("analysis_form"):
-        entity = st.text_input("Enter entity to analyze", placeholder="e.g., Apple, ChatGPT, Tesla")
-        category = st.selectbox(
-            "📂 Category (Optional)",
-            ["", "Technology", "Finance", "Healthcare", "Education", "Entertainment", "Consumer", "Business", "Other"],
-            help="Choose category or auto-detect"
-        )
-        
-        # Provider selection
-        if ENABLED:
-            st.subheader("Select Providers")
-            providers_selected = []
-            for p in ENABLED.keys():
-                if st.checkbox(f"Use {p}", value=p in ENABLED):
-                    providers_selected.append(p)
-        else:
-            providers_selected = []
-            st.info("Simulation mode - all providers enabled")
-        
-        submitted = st.form_submit_button("🔍 Analyze Visibility")
-    
-    # Analysis results
-    if submitted and entity:
-        if not entity.strip():
-            st.warning("Please enter an entity to analyze.")
-            return
-        
-        # Normalize the entity name and guess category if not provided
-        normalized_entity = normalize_entity(entity)
-        if normalized_entity != entity:
-            st.info(f"🔍 Normalized entity name: '{entity}' → '{normalized_entity}'")
-        
-        # Auto-detect category if not provided
-        if not category:
-            guessed_category = enhanced_guess_category(normalized_entity)
-            st.info(f"📂 Auto-detected category: {guessed_category}")
-            category = guessed_category
-        
-        # Show loading
-        with st.spinner("🔍 Analyzing visibility across LLMs..."):
-            # Try real API calls first
-            if not SIMULATION_MODE:
-                # Use multi-provider analysis
-                if providers_selected:
-                    try:
-                        result = analyze_entity(normalized_entity, providers_selected)
-                        
-                        # Store in session state for recent analyses
-                        if 'recent_analyses' not in st.session_state:
-                            st.session_state.recent_analyses = []
-                        
-                        st.session_state.recent_analyses.append({
-                            'entity': normalized_entity,
-                            'score': result['overall_score'],
-                            'timestamp': datetime.now()
-                        })
-                        
-                        # Display results
-                        display_results(result)
-                        return
-                    except Exception as e:
-                        st.error(f"❌ Error during multi-provider analysis: {str(e)}")
-                        st.info("💡 **Error Details:**")
-                        st.info(f"Exception type: {type(e).__name__}")
-                        st.info(f"Error message: {str(e)}")
-                        return
-            
-            # Fallback to simulation if no real results
-            if SIMULATION_MODE:
-                st.info("Running in simulation mode - no API keys available")
-                # Use fallback result for simulation
-                analysis_result = get_fallback_result(normalized_entity, "Simulation mode - no real API calls")
-                display_results(analysis_result)
-            else:
-                st.warning("API call failed. Check your API keys and try again.")
-                st.info("💡 **Troubleshooting Tips:**")
-                st.info("1. Verify your API key is valid and has credits")
-                st.info("2. Check if the model 'gpt-4o-mini' is available")
-                st.info("3. Ensure your OpenAI account has access to the API")
-    
-    # Quick stats section
-    st.header("📊 Quick Stats")
-    if 'recent_analyses' in st.session_state and st.session_state.recent_analyses:
-        df = pd.DataFrame(st.session_state.recent_analyses)
-        st.dataframe(df)
-    else:
-        st.info("No analyses yet. Start by analyzing an entity above.")
-
-def display_results(results):
-    """Display analysis results in a structured format using the schema"""
-    st.header(f"📈 Analysis Results: {results['entity']}")
-    
-    # Overall score
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.metric("Overall Visibility Score", f"{results['overall_score']}/100")
-    
-    # Breakdown scores
-    st.subheader("📊 Detailed Breakdown")
-    
-    # Create a radar chart for the breakdown
-    breakdown = results['breakdown']
     categories = list(breakdown.keys())
     values = list(breakdown.values())
     
-    # Create the radar chart
+    # Close the radar chart by adding the first point at the end
+    categories_closed = categories + [categories[0]]
+    values_closed = values + [values[0]]
+    
     fig = go.Figure()
+    
     fig.add_trace(go.Scatterpolar(
-        r=values,
-        theta=categories,
+        r=values_closed,
+        theta=categories_closed,
         fill='toself',
-        name='Visibility Scores',
-        line_color='#667eea'
+        name='Visibility Breakdown',
+        line=dict(color='#667eea', width=3),
+        fillcolor='rgba(102, 126, 234, 0.25)'
     ))
     
     fig.update_layout(
         polar=dict(
             radialaxis=dict(
                 visible=True,
-                range=[0, 100]
-            )),
+                range=[0, 100],
+                tickfont=dict(size=10),
+                gridcolor='rgba(0,0,0,0.1)'
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=12, color='#333')
+            )
+        ),
         showlegend=False,
-        title="Visibility Breakdown Analysis"
+        title="Visibility Breakdown",
+        title_x=0.5,
+        height=400,
+        font=dict(family="Arial, sans-serif")
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    return fig
+
+def create_bar_chart(breakdown: Dict[str, int]) -> go.Figure:
+    """Create a bar chart for the breakdown scores"""
     
-    # Individual metrics
+    categories = list(breakdown.keys())
+    values = list(breakdown.values())
+    
+    # Create color scale based on values
+    colors = ['#1f77b4' if v >= 70 else '#ff7f0e' if v >= 50 else '#d62728' for v in values]
+    
+    fig = go.Figure(data=[
+        go.Bar(
+            x=categories,
+            y=values,
+            marker_color=colors,
+            text=[f'{v}%' for v in values],
+            textposition='auto',
+        )
+    ])
+    
+    fig.update_layout(
+        title="Detailed Score Breakdown",
+        xaxis_title="Metrics",
+        yaxis_title="Score (0-100)",
+        yaxis=dict(range=[0, 100]),
+        height=400,
+        showlegend=False
+    )
+    
+    return fig
+
+def display_provider_status():
+    """Display current provider status"""
+    available_providers = get_available_providers()
+    
+    st.subheader("🤖 Provider Status")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        status_class = "provider-enabled" if available_providers.get("openai") else "provider-disabled"
+        status_text = "✅ Available" if available_providers.get("openai") else "❌ No API Key"
+        st.markdown(f'<div class="provider-status {status_class}">OpenAI: {status_text}</div>', unsafe_allow_html=True)
+    
+    with col2:
+        status_class = "provider-enabled" if available_providers.get("anthropic") else "provider-disabled"
+        status_text = "✅ Available" if available_providers.get("anthropic") else "❌ No API Key"
+        st.markdown(f'<div class="provider-status {status_class}">Anthropic: {status_text}</div>', unsafe_allow_html=True)
+    
+    with col3:
+        status_class = "provider-enabled" if available_providers.get("gemini") else "provider-disabled"
+        status_text = "✅ Available" if available_providers.get("gemini") else "❌ No API Key"
+        st.markdown(f'<div class="provider-status {status_class}">Gemini: {status_text}</div>', unsafe_allow_html=True)
+    
+    return available_providers
+
+def display_results(result: Dict[str, Any]):
+    """Display analysis results with beautiful formatting"""
+    
+    st.success(f"✅ Analysis completed for **{result['entity']}**")
+    
+    # Overall score display
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="score-display">{result['overall_score']}</div>
+            <div style="text-align: center; font-size: 1.2rem; color: #666; margin-top: 0.5rem;">
+                Overall Visibility Score
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Entity details
     col1, col2 = st.columns(2)
     with col1:
-        for i in range(0, len(categories), 2):
-            if i < len(categories):
-                st.metric(categories[i].title(), f"{values[i]}/100")
+        st.metric("Entity", result['entity'])
+        st.metric("Category", result['category'])
     with col2:
-        for i in range(1, len(categories), 2):
-            if i < len(categories):
-                st.metric(categories[i].title(), f"{values[i]}/100")
+        if result.get('sources'):
+            st.metric("Sources Found", len(result['sources']))
     
-    # Notes and sources
-    if results.get('notes'):
+    # Charts section
+    st.subheader("📊 Detailed Analysis")
+    
+    chart_col1, chart_col2 = st.columns(2)
+    
+    with chart_col1:
+        radar_fig = create_radar_chart(result['breakdown'])
+        st.plotly_chart(radar_fig, use_container_width=True)
+    
+    with chart_col2:
+        bar_fig = create_bar_chart(result['breakdown'])
+        st.plotly_chart(bar_fig, use_container_width=True)
+    
+    # Breakdown metrics
+    st.subheader("📈 Score Breakdown")
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    breakdown = result['breakdown']
+    with col1:
+        st.metric("Recognition", f"{breakdown.get('recognition', 0)}/100", 
+                 help="How well LLMs recognize this entity")
+    with col2:
+        st.metric("Media", f"{breakdown.get('media', 0)}/100", 
+                 help="Media coverage and mentions")
+    with col3:
+        st.metric("Context", f"{breakdown.get('context', 0)}/100", 
+                 help="Industry context understanding")
+    with col4:
+        st.metric("Competitors", f"{breakdown.get('competitors', 0)}/100", 
+                 help="Competitive landscape awareness")
+    with col5:
+        st.metric("Consistency", f"{breakdown.get('consistency', 0)}/100", 
+                 help="Response consistency across models")
+    
+    # Notes section
+    if result.get('notes'):
         st.subheader("📝 Analysis Notes")
-        st.write(results['notes'])
+        st.info(result['notes'])
     
-    if results.get('sources') and len(results['sources']) > 0:
+    # Sources section
+    if result.get('sources'):
         st.subheader("🔗 Sources")
-        for source in results['sources']:
-            st.write(f"• {source}")
+        sources_text = ""
+        for i, source in enumerate(result['sources'], 1):
+            # Try to make domains clickable if they look like URLs
+            if '.' in source and ' ' not in source:
+                if not source.startswith('http'):
+                    source = f"https://{source}"
+                sources_text += f"{i}. [{source}]({source})\n"
+            else:
+                sources_text += f"{i}. {source}\n"
+        
+        st.markdown(sources_text)
     
-    # Category info
-    st.info(f"📂 **Category:** {results.get('category', 'Unknown')}")
+    # Raw data expander
+    with st.expander("🔍 Raw Analysis Data"):
+        st.json(result)
+
+def main():
+    """Main application function"""
+    
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🔍 LLM Visibility Analyzer</h1>
+        <p>Professional brand & topic analysis across AI knowledge spaces</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Sidebar configuration
+    with st.sidebar:
+        st.header("⚙️ Configuration")
+        
+        # Display provider status
+        available_providers = display_provider_status()
+        
+        st.divider()
+        
+        # Provider selection
+        st.subheader("🎯 Provider Selection")
+        
+        selected_providers = []
+        
+        if available_providers.get("openai"):
+            if st.checkbox("OpenAI (GPT-4)", value=True):
+                selected_providers.append("openai")
+        else:
+            st.checkbox("OpenAI (GPT-4)", value=False, disabled=True, help="API key required")
+        
+        if available_providers.get("anthropic"):
+            if st.checkbox("Anthropic (Claude)", value=True):
+                selected_providers.append("anthropic")
+        else:
+            st.checkbox("Anthropic (Claude)", value=False, disabled=True, help="API key required")
+        
+        if available_providers.get("gemini"):
+            if st.checkbox("Google (Gemini)", value=True):
+                selected_providers.append("gemini")
+        else:
+            st.checkbox("Google (Gemini)", value=False, disabled=True, help="API key required")
+        
+        if not any(available_providers.values()):
+            st.warning("⚠️ No API keys detected. Add them to environment variables:\n- OPENAI_API_KEY\n- ANTHROPIC_API_KEY\n- GEMINI_API_KEY")
+            selected_providers = []  # Will trigger fallback mode
+        
+        st.divider()
+        
+        # Web enrichment toggle
+        st.subheader("🌐 Web Enrichment")
+        enable_web_search = st.checkbox("Enable category detection via web search", value=True,
+                                       help="Use Tavily/Serper APIs to improve category detection")
+        
+        if enable_web_search:
+            tavily_key = os.getenv('TAVILY_API_KEY')
+            serper_key = os.getenv('SERPER_API_KEY')
+            if tavily_key:
+                st.success("✅ Tavily API detected")
+            elif serper_key:
+                st.success("✅ Serper API detected")
+            else:
+                st.info("ℹ️ Add TAVILY_API_KEY or SERPER_API_KEY for web enrichment")
+    
+    # Main content area
+    st.subheader("🎯 Entity Analysis")
+    
+    # Input form
+    with st.form("analysis_form"):
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            entity = st.text_input(
+                "Entity to analyze",
+                placeholder="e.g., Vuori, Tesla, ChatGPT, Apple",
+                help="Enter a brand, company, person, or concept"
+            )
+        
+        with col2:
+            manual_category = st.selectbox(
+                "Override category (optional)",
+                ["", "consumer apparel / activewear", "technology", "automotive", "artificial intelligence", "healthcare", "financial services", "other"],
+                help="Leave blank for automatic detection"
+            )
+        
+        submitted = st.form_submit_button("🚀 Analyze Visibility", type="primary", use_container_width=True)
+    
+    # Handle form submission
+    if submitted:
+        if not entity.strip():
+            st.error("Please enter an entity to analyze.")
+            return
+        
+        # Show what we're about to do
+        if selected_providers:
+            provider_names = [p.title() for p in selected_providers]
+            st.info(f"🔍 Analyzing with: {', '.join(provider_names)}")
+        else:
+            st.info("🔍 No API keys available - will provide structured fallback")
+        
+        # Run analysis with progress indicator
+        with st.spinner("🔍 Analyzing visibility across LLM knowledge spaces..."):
+            try:
+                result = analyze_entity(entity, selected_providers)
+                
+                # Store in session state for history
+                if 'analysis_history' not in st.session_state:
+                    st.session_state.analysis_history = []
+                
+                st.session_state.analysis_history.append({
+                    'entity': result['entity'],
+                    'score': result['overall_score'],
+                    'category': result['category']
+                })
+                
+                # Keep only last 10 analyses
+                if len(st.session_state.analysis_history) > 10:
+                    st.session_state.analysis_history = st.session_state.analysis_history[-10:]
+                
+                # Display results
+                display_results(result)
+                
+            except Exception as e:
+                st.error(f"Analysis failed: {str(e)}")
+                st.error("Please check your API keys and try again.")
+                
+                # Show fallback option
+                if st.button("🔄 Try with fallback analysis"):
+                    fallback_result = {
+                        "entity": entity,
+                        "category": manual_category or guess_category(entity),
+                        "overall_score": 45,
+                        "breakdown": {
+                            "recognition": 40,
+                            "media": 35,
+                            "context": 50,
+                            "competitors": 45,
+                            "consistency": 55
+                        },
+                        "notes": "Fallback analysis due to API connection issues. Scores are estimated based on entity characteristics.",
+                        "sources": []
+                    }
+                    display_results(fallback_result)
+    
+    # Analysis history
+    if 'analysis_history' in st.session_state and st.session_state.analysis_history:
+        st.subheader("📚 Recent Analyses")
+        
+        history_df = pd.DataFrame(st.session_state.analysis_history)
+        
+        # Create a summary chart
+        if len(history_df) > 1:
+            fig = px.bar(history_df, x='entity', y='score', color='category',
+                        title="Recent Analysis Scores")
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Show table
+        st.dataframe(history_df[['entity', 'score', 'category']], use_container_width=True)
+        
+        # Clear history button
+        if st.button("🗑️ Clear History"):
+            st.session_state.analysis_history = []
+            st.rerun()
 
 if __name__ == "__main__":
     main() 
