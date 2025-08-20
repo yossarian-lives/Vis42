@@ -12,6 +12,9 @@ from datetime import datetime
 import sys
 import os
 from collections.abc import Mapping
+from typing import Optional, Dict, Any
+import re
+import json
 
 # ---- Schema and Validation --------------------------------------------------
 
@@ -213,79 +216,198 @@ Analyze "{entity}" now:"""
     
     return prompt
 
+# ---- Robust JSON Coercion Utilities -----------------------------------------
+
+def coerce_json(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Robust JSON extraction from LLM text output.
+    
+    Attempts multiple strategies to extract valid JSON from potentially
+    messy LLM responses including markdown code fences, extra text, etc.
+    
+    Args:
+        text: Raw text from LLM provider
+        
+    Returns:
+        Parsed JSON dict or None if extraction fails
+    """
+    if not text or not isinstance(text, str):
+        return None
+    
+    text = text.strip()
+    
+    # Strategy 1: Try parsing directly
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    
+    # Strategy 2: Extract from code fences
+    code_fence_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if code_fence_match:
+        try:
+            return json.loads(code_fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    
+    # Strategy 3: Find first balanced JSON object
+    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+    
+    # Strategy 4: More aggressive extraction - find any { ... } block
+    brace_match = re.search(r'\{.*\}', text, re.DOTALL)
+    if brace_match:
+        candidate = brace_match.group(0)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+    
+    # Strategy 5: Try to fix common JSON issues
+    try:
+        # Replace single quotes with double quotes
+        fixed_text = re.sub(r"'([^']*)':", r'"\1":', text)
+        fixed_text = re.sub(r": '([^']*)'", r': "\1"', fixed_text)
+        return json.loads(fixed_text)
+    except json.JSONDecodeError:
+        pass
+    
+    return None
+
+def sanitize_json_string(text: str) -> str:
+    """
+    Clean up a string to be JSON-safe.
+    
+    Args:
+        text: Input string that may contain problematic characters
+        
+    Returns:
+        JSON-safe string
+    """
+    if not isinstance(text, str):
+        return str(text)
+    
+    # Remove or escape problematic characters
+    text = text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    text = re.sub(r'\s+', ' ', text)  # Collapse multiple spaces
+    text = text.strip()
+    
+    # Limit length
+    if len(text) > 500:
+        text = text[:497] + "..."
+    
+    return text
+
 def parse_openai_response(response: str, entity: str, category: str) -> dict:
     """Parse OpenAI response and convert to structured schema format"""
     try:
-        # First, try to extract JSON from the response
-        import re
-        import json
+        # Use the robust JSON coercion utility
+        parsed_data = coerce_json(response)
         
-        # Look for JSON in the response (handle both raw JSON and markdown code blocks)
-        json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-        json_match = re.search(json_pattern, response)
+        if parsed_data:
+            # Validate the parsed data against our schema
+            if validate_result(parsed_data):
+                st.success("✅ Successfully parsed structured JSON response!")
+                return parsed_data
+            else:
+                st.warning("⚠️ JSON parsed but failed schema validation - using fallback")
+                # Try to fix common schema issues
+                fixed_data = fix_schema_issues(parsed_data, entity, category)
+                if validate_result(fixed_data):
+                    st.success("✅ Fixed schema issues and validated successfully!")
+                    return fixed_data
+        else:
+            st.info("ℹ️ No JSON found in response - using fallback parsing")
         
-        if json_match:
-            try:
-                json_str = json_match.group(0)
-                parsed_data = json.loads(json_str)
-                
-                # Validate the parsed data
-                if validate_result(parsed_data):
-                    st.success("✅ Successfully parsed structured JSON response!")
-                    return parsed_data
-                else:
-                    st.warning("⚠️ JSON parsed but failed schema validation - using fallback")
-            except json.JSONDecodeError as e:
-                st.warning(f"⚠️ Failed to parse JSON: {str(e)}")
-        
-        # If JSON parsing failed, try to extract structured information from the response
-        # This is a fallback parser for non-JSON responses
-        
-        # Default values
-        result = {
-            "entity": entity,
-            "category": category or "auto-detected",
-            "overall_score": 50,  # Default middle score
-            "breakdown": {
-                "recognition": 50,
-                "media": 50,
-                "context": 50,
-                "competitors": 50,
-                "consistency": 50
-            },
-            "notes": response[:600],  # Truncate to max length
-            "sources": []
-        }
-        
-        # Try to extract score if mentioned
-        score_match = re.search(r'(\d{1,3})/100|score[:\s]*(\d{1,3})|(\d{1,3})\s*out\s*of\s*100', response, re.IGNORECASE)
-        if score_match:
-            score = int(score_match.group(1) or score_match.group(2) or score_match.group(3))
-            if 0 <= score <= 100:
-                result["overall_score"] = score
-        
-        # Try to extract category if not provided
-        if not category or category == "auto-detected":
-            category_keywords = {
-                "Technology": ["tech", "software", "ai", "artificial intelligence", "machine learning"],
-                "Finance": ["finance", "banking", "investment", "crypto", "blockchain"],
-                "Healthcare": ["health", "medical", "pharma", "biotech"],
-                "Education": ["education", "learning", "academic", "university"],
-                "Entertainment": ["entertainment", "media", "gaming", "film", "music"],
-                "Consumer": ["consumer", "apparel", "fashion", "retail", "brand"],
-                "Business": ["business", "enterprise", "corporate", "startup", "company"]
-            }
-            
-            response_lower = response.lower()
-            for cat, keywords in category_keywords.items():
-                if any(keyword in response_lower for keyword in keywords):
-                    result["category"] = cat
-                    break
-        
+        # Fallback: extract structured information from text response
+        result = extract_from_text(response, entity, category)
         return result
+        
     except Exception as e:
         st.warning(f"Failed to parse OpenAI response: {str(e)}")
         return get_fallback_result(entity, f"Failed to parse response: {str(e)}")
+
+def fix_schema_issues(data: dict, entity: str, category: str) -> dict:
+    """Attempt to fix common schema validation issues"""
+    try:
+        # Ensure required fields exist
+        if "entity" not in data:
+            data["entity"] = entity
+        if "category" not in data:
+            data["category"] = category or "auto-detected"
+        if "overall_score" not in data:
+            data["overall_score"] = 50
+        
+        # Ensure breakdown exists and has all required fields
+        if "breakdown" not in data:
+            data["breakdown"] = {}
+        
+        required_breakdown_fields = ["recognition", "media", "context", "competitors", "consistency"]
+        for field in required_breakdown_fields:
+            if field not in data["breakdown"]:
+                data["breakdown"][field] = 50
+        
+        # Ensure notes and sources exist
+        if "notes" not in data:
+            data["notes"] = "Analysis completed"
+        if "sources" not in data:
+            data["sources"] = []
+        
+        # Sanitize strings
+        data["notes"] = sanitize_json_string(data["notes"])
+        
+        return data
+    except Exception:
+        return get_fallback_result(entity, "Failed to fix schema issues")
+
+def extract_from_text(response: str, entity: str, category: str) -> dict:
+    """Extract structured information from text when JSON parsing fails"""
+    # Default values
+    result = {
+        "entity": entity,
+        "category": category or "auto-detected",
+        "overall_score": 50,  # Default middle score
+        "breakdown": {
+            "recognition": 50,
+            "media": 50,
+            "context": 50,
+            "competitors": 50,
+            "consistency": 50
+        },
+        "notes": sanitize_json_string(response[:600]),  # Truncate and sanitize
+        "sources": []
+    }
+    
+    # Try to extract score if mentioned
+    score_match = re.search(r'(\d{1,3})/100|score[:\s]*(\d{1,3})|(\d{1,3})\s*out\s*of\s*100', response, re.IGNORECASE)
+    if score_match:
+        score = int(score_match.group(1) or score_match.group(2) or score_match.group(3))
+        if 0 <= score <= 100:
+            result["overall_score"] = score
+    
+    # Try to extract category if not provided
+    if not category or category == "auto-detected":
+        category_keywords = {
+            "Technology": ["tech", "software", "ai", "artificial intelligence", "machine learning"],
+            "Finance": ["finance", "banking", "investment", "crypto", "blockchain"],
+            "Healthcare": ["health", "medical", "pharma", "biotech"],
+            "Education": ["education", "learning", "academic", "university"],
+            "Entertainment": ["entertainment", "media", "gaming", "film", "music"],
+            "Consumer": ["consumer", "apparel", "fashion", "retail", "brand"],
+            "Business": ["business", "enterprise", "corporate", "startup", "company"]
+        }
+        
+        response_lower = response.lower()
+        for cat, keywords in category_keywords.items():
+            if any(keyword in response_lower for keyword in keywords):
+                result["category"] = cat
+                break
+    
+    return result
 
 # Page configuration
 st.set_page_config(
