@@ -1,5 +1,6 @@
 """
 OpenAI adapter that returns structured JSON matching the unified schema.
+Enhanced for mission-critical visibility analysis with custom prompt support.
 """
 
 import os
@@ -21,7 +22,7 @@ def call_openai_api(prompt: str) -> Optional[str]:
         api_key = get_openai_key()
         if not api_key:
             return None
-        
+            
         client = OpenAI(
             api_key=api_key,
             http_client=httpx.Client(timeout=20.0)
@@ -31,11 +32,11 @@ def call_openai_api(prompt: str) -> Optional[str]:
             model="gpt-4o-mini",
             messages=[
                 {
-                    "role": "system",
+                    "role": "system", 
                     "content": "You are a visibility analyst. Return ONLY valid JSON matching the exact schema requested. No markdown, no explanations."
                 },
                 {
-                    "role": "user",
+                    "role": "user", 
                     "content": prompt
                 }
             ],
@@ -51,30 +52,45 @@ def call_openai_api(prompt: str) -> Optional[str]:
         print(f"OpenAI API error: {str(e)}")
         return None
 
-def analyze_with_openai(entity: str, category: str) -> Dict[str, Any]:
+def analyze_with_openai(entity: str, category: str, custom_prompt: Optional[str] = None) -> Dict[str, Any]:
     """
     Analyze entity visibility using OpenAI API.
     
     Args:
         entity: Entity name (normalized)
         category: Category hint
+        custom_prompt: Optional custom prompt for specialized analysis
         
     Returns:
         Dict matching unified schema or structured fallback
     """
-    prompt = make_prompt(entity, category)
+    if custom_prompt:
+        prompt = custom_prompt
+    else:
+        prompt = make_prompt(entity, category)
     
     # Make API call
     response_text = call_openai_api(prompt)
+    
     if not response_text:
         return get_fallback_result(entity, "OpenAI API call failed or timed out.")
     
     # Try to parse JSON
     result = coerce_json(response_text)
+    
     if not result:
         return get_fallback_result(entity, "Could not parse OpenAI response as valid JSON.")
     
-    # Validate against schema
+    # For custom prompts, we might get different schemas, so be more flexible
+    if custom_prompt:
+        # Basic validation - ensure entity and some data is present
+        if not result.get("entity") and entity:
+            result["entity"] = entity
+        if not result.get("category") and category:
+            result["category"] = category
+        return result
+    
+    # For standard prompts, validate against schema
     if not validate_result(result):
         return get_fallback_result(entity, "OpenAI response did not match required schema.")
     
