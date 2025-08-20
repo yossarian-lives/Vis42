@@ -79,11 +79,21 @@ def call_openai(prompt: str) -> str | None:
         from openai import OpenAI
         import httpx
         client = OpenAI(api_key=ENABLED["OpenAI"], http_client=httpx.Client(timeout=20))
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
+        # Try gpt-4o-mini first, fallback to gpt-3.5-turbo if not available
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+        except Exception as model_error:
+            # Fallback to gpt-3.5-turbo if gpt-4o-mini fails
+            st.info("⚠️ gpt-4o-mini not available, trying gpt-3.5-turbo...")
+            resp = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
         return resp.choices[0].message.content
     except Exception as e:
         # Log the error for debugging
