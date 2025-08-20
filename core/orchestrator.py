@@ -19,32 +19,6 @@ def get_available_providers() -> Dict[str, bool]:
         "gemini": bool(get_gemini_key())
     }
 
-def calculate_overall_score(breakdown: Dict[str, int]) -> int:
-    """
-    Calculate overall score using weighted formula.
-    
-    Weights:
-    - Recognition: 30%
-    - Media: 25% 
-    - Context: 20%
-    - Consistency: 15%
-    - Competitors: 10%
-    """
-    weights = {
-        "recognition": 0.30,
-        "media": 0.25,
-        "context": 0.20,
-        "consistency": 0.15,
-        "competitors": 0.10
-    }
-    
-    weighted_sum = 0
-    for metric, weight in weights.items():
-        score = breakdown.get(metric, 40)
-        weighted_sum += score * weight
-    
-    return int(round(weighted_sum))
-
 def merge_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Merge multiple provider results using median scoring.
@@ -120,6 +94,32 @@ def merge_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         "sources": unique_sources
     }
 
+def calculate_overall_score(breakdown: Dict[str, int]) -> int:
+    """
+    Calculate overall score using weighted formula.
+    
+    Weights:
+    - Recognition: 30%
+    - Media: 25% 
+    - Context: 20%
+    - Consistency: 15%
+    - Competitors: 10%
+    """
+    weights = {
+        "recognition": 0.30,
+        "media": 0.25,
+        "context": 0.20,
+        "consistency": 0.15,
+        "competitors": 0.10
+    }
+    
+    weighted_sum = 0
+    for metric, weight in weights.items():
+        score = breakdown.get(metric, 40)
+        weighted_sum += score * weight
+    
+    return int(round(weighted_sum))
+
 def analyze_entity(raw_entity: str, selected_providers: List[str] = None) -> Dict[str, Any]:
     """
     Main orchestration function.
@@ -145,7 +145,7 @@ def analyze_entity(raw_entity: str, selected_providers: List[str] = None) -> Dic
     
     if selected_providers:
         # Filter to only selected and available providers
-        providers_to_use = [p.lower() for p in selected_providers if available_providers.get(p.lower(), False)]
+        providers_to_use = [p for p in selected_providers if available_providers.get(p, False)]
     else:
         # Use all available providers
         providers_to_use = [p for p, available in available_providers.items() if available]
