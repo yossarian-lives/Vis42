@@ -16,8 +16,6 @@ from collections.abc import Mapping
 # Add the src directory to the path so we can import our modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-
-
 # ---- Robust Secret Detection -------------------------------------------------
 
 def _find_in_mapping(d: Mapping, name: str):
