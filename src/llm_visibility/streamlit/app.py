@@ -563,8 +563,9 @@ def main():
                         # Show what we're trying to do
                         st.info(f"🔍 Attempting OpenAI API call with model fallback...")
                         
-                        result = call_openai(prompt)
-                        if result:
+                        try:
+                            result = call_openai(prompt)
+                            if result:
                             # Parse the result and create a structured response
                             # For now, create a simple result structure
                             analysis_result = {
@@ -596,6 +597,12 @@ def main():
                             st.info("1. Use the '🧪 Test API Key' button above to test your key")
                             st.info("2. Check the error message that should appear above")
                             st.info("3. Verify your API key has credits and access")
+                            return
+                        except Exception as e:
+                            st.error(f"❌ Error during OpenAI API call: {str(e)}")
+                            st.info("💡 **Error Details:**")
+                            st.info(f"Exception type: {type(e).__name__}")
+                            st.info(f"Error message: {str(e)}")
                             return
                 
                 # Fallback to simulation if no real results
