@@ -3,19 +3,9 @@ streamlit>=1.28.0
 pandas>=1.5.0
 plotly>=5.15.0
 
-# LLM API packages (required for real API usage)
+# LLM API packages
 openai>=1.0.0
 httpx>=0.24.0
 
-# Optional LLM providers (only if you use them)
-anthropic>=0.7.0
-google-generativeai>=0.3.0
-
 # Utility packages
 python-dotenv>=1.0.0
-
-# Note: When deploying to Streamlit Cloud:
-# 1. Add your API keys to .streamlit/secrets.toml
-# 2. The app will automatically use real APIs if keys are available
-# 3. Falls back to simulation mode if no keys are provided
-# 4. httpx is used for timeout handling in OpenAI client
