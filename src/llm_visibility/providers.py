@@ -25,12 +25,19 @@ def call_with_fallback(fn, *, provider_name, simulate_fn):
     return {"ok": False, "error": f"{provider_name} failed and no fallback"}
 
 def call_openai_robust(entity: str, category: str):
-    """Robust OpenAI call with proper error handling"""
+    """Robust OpenAI call with improved error handling and modern SDK pattern"""
     def _call():
-        import openai
-        client = openai.OpenAI(api_key=SETTINGS.openai_key)
-        
-        prompt = f"""Analyze the LLM visibility of "{entity}" in the {category} space.
+        try:
+            from openai import OpenAI
+            
+            api_key = SETTINGS.openai_key
+            if not api_key:
+                raise ValueError("No OpenAI API key available")
+            
+            client = OpenAI(api_key=api_key)
+            model = "gpt-4o-mini"  # Could be made configurable
+            
+            prompt = f"""Analyze the LLM visibility of "{entity}" in the {category} space.
 
 Return ONLY a JSON object with these exact fields:
 {{
@@ -44,19 +51,47 @@ Return ONLY a JSON object with these exact fields:
 
 Use realistic scores 0.0-1.0 based on how well-known {entity} is."""
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are an LLM visibility analyst. Return ONLY valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=SETTINGS.max_tokens,
-            response_format={"type": "json_object"}
-        )
-        
-        result_text = response.choices[0].message.content
-        return json.loads(result_text)
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an LLM visibility analyst. Return ONLY valid JSON matching the exact schema requested."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=SETTINGS.max_tokens,
+                response_format={"type": "json_object"},
+                timeout=45
+            )
+            
+            result_text = response.choices[0].message.content
+            if not result_text or not result_text.strip():
+                raise ValueError("Empty response from OpenAI")
+            
+            # Parse JSON with validation
+            try:
+                result = json.loads(result_text)
+            except json.JSONDecodeError as je:
+                raise ValueError(f"Invalid JSON response: {je}")
+            
+            # Validate required fields
+            required_fields = ["facts", "competitors", "detail_score", "context_score", "recognition_score", "consistency_score"]
+            for field in required_fields:
+                if field not in result:
+                    raise ValueError(f"Missing required field: {field}")
+            
+            # Validate score types
+            score_fields = ["detail_score", "context_score", "recognition_score", "consistency_score"]
+            for field in score_fields:
+                score_val = result.get(field)
+                if not isinstance(score_val, (int, float)) or score_val < 0 or score_val > 1:
+                    raise ValueError(f"Invalid score for {field}: {score_val}")
+            
+            return result
+            
+        except Exception as e:
+            # Log detailed error for debugging
+            log.error(f"OpenAI API call failed: {type(e).__name__}: {str(e)}")
+            raise
     
     def _simulate():
         return {

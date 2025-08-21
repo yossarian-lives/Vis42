@@ -250,4 +250,21 @@ def get_fallback_result(entity: str, category: str, reason: str) -> Dict[str, An
         "provider": "OpenAI (Simulated)",
         "simulated": True,
         "reason": reason
-    } 
+    }
+
+# Example usage and testing
+if __name__ == "__main__":
+    print("Testing OpenAI adapter...")
+    
+    # Test connection
+    ok, msg = test_openai_connection("Tesla")
+    print(f"Connection test: {ok} - {msg}")
+    
+    # Test analysis (will fail without API key)
+    result = analyze_with_openai("Tesla", "automotive")
+    print(f"Analysis result: {result.get('simulated', False)}")
+    
+    if result.get('simulated'):
+        print(f"Fallback reason: {result.get('reason')}")
+        if result.get('error'):
+            print(f"Error: {result['error']}") 

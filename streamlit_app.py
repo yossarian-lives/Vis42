@@ -1,224 +1,429 @@
 """
-LLM Visibility Analyzer - Minimal Working Baseline
-Clean, robust, and always functional.
+LLM Visibility Analyzer - DIAGNOSTIC VERSION
+This version includes all diagnostics to find and fix the simulation fallback issue
 """
 
 import streamlit as st
-import pandas as pd
-import plotly.express as px
-from src.llm_visibility.utils.config import SETTINGS
-from src.llm_visibility.utils.logging import get_logger
-from src.llm_visibility.providers import call_openai_robust, call_anthropic_robust, call_gemini_robust
-from src.llm_visibility.scoring import score
-
-log = get_logger("vis42.ui")
+import os
+import json
+import traceback
+from typing import Tuple, Dict, Any, Optional
 
 # Page config
 st.set_page_config(
-    page_title="LLM Visibility Analyzer",
-    page_icon="🎯",
+    page_title="LLM Visibility Analyzer - Diagnostic",
+    page_icon="🔍",
     layout="wide"
 )
 
-@st.cache_data
-def get_provider_status():
-    """Cache provider metadata to avoid repeated checks"""
+# Utility functions
+def mask(s):
+    """Mask API key for display"""
+    return "•••" if not s else f"{s[:3]}•••{s[-4:]}"
+
+def get_api_keys():
+    """Get all API keys with fallback"""
+    openai_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    gemini_key = st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    
     return {
-        "openai": bool(SETTINGS.openai_key),
-        "anthropic": bool(SETTINGS.anthropic_key),
-        "gemini": bool(SETTINGS.gemini_key)
+        "openai": openai_key,
+        "anthropic": anthropic_key, 
+        "gemini": gemini_key
     }
 
-def render_score_chart(scores):
-    """Render the score breakdown chart"""
-    df = pd.DataFrame([
-        {"Metric": k, "Score": v} for k, v in scores.items() if k != "Overall"
-    ])
+def get_config():
+    """Get configuration flags"""
+    real_enabled = str(st.secrets.get("REAL_ANALYSIS_ENABLED", os.getenv("REAL_ANALYSIS_ENABLED", "true"))).lower() == "true"
+    sim_fallback = str(st.secrets.get("SIMULATION_FALLBACK", os.getenv("SIMULATION_FALLBACK", "true"))).lower() == "true"
+    openai_model = st.secrets.get("OPENAI_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     
-    fig = px.bar(
-        df, 
-        x="Metric", 
-        y="Score",
-        color="Score",
-        color_continuous_scale="RdYlGn",
-        title="Visibility Score Breakdown",
-        range_color=[0, 100]
-    )
-    fig.update_layout(height=400)
-    return fig
+    return {
+        "real_enabled": real_enabled,
+        "sim_fallback": sim_fallback,
+        "openai_model": openai_model
+    }
+
+def openai_sanity_check(entity: str, api_key: str, model: str) -> Tuple[bool, str]:
+    """Test OpenAI API with detailed error reporting"""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a precise brand-visibility assistant."},
+                {"role": "user", "content": f"In one sentence, say what {entity} is."}
+            ],
+            temperature=0.2,
+            max_tokens=50,
+            timeout=45
+        )
+        
+        text = response.choices[0].message.content.strip()
+        return True, f"Model: {model} · OK · '{text[:120]}'"
+        
+    except Exception as e:
+        error_details = f"{type(e).__name__}: {str(e)}"
+        return False, f"OpenAI error: {error_details}"
+
+def openai_visibility_analysis(entity: str, category: str, api_key: str, model: str) -> Dict[str, Any]:
+    """Full OpenAI visibility analysis with error handling"""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        prompt = f"""Analyze the LLM visibility of "{entity}" in the {category} space.
+
+Return ONLY a JSON object with this exact structure:
+{{
+    "entity": "{entity}",
+    "category": "{category}",
+    "overall_score": 75,
+    "breakdown": {{
+        "recognition": 80,
+        "media": 70,
+        "context": 75,
+        "competitors": 85,
+        "consistency": 80
+    }},
+    "notes": "Brief analysis of {entity}'s visibility",
+    "sources": ["source1.com", "source2.com"]
+}}
+
+Base scores on how well-known {entity} is. Use realistic values 0-100."""
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are an LLM visibility analyst. Return ONLY valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+            response_format={"type": "json_object"}
+        )
+        
+        result_text = response.choices[0].message.content
+        result = json.loads(result_text)
+        
+        # Validate required fields
+        if "overall_score" not in result or "breakdown" not in result:
+            raise ValueError("Missing required fields in response")
+        
+        return {
+            "ok": True,
+            "provider": "OpenAI",
+            "simulated": False,
+            "result": result,
+            "note": f"Real OpenAI analysis using {model}"
+        }
+        
+    except Exception as e:
+        tb = traceback.format_exc(limit=3)
+        return {
+            "ok": False,
+            "provider": "OpenAI", 
+            "simulated": True,
+            "error": str(e),
+            "trace": tb,
+            "note": f"OpenAI failed: {type(e).__name__}: {e}"
+        }
+
+def anthropic_sanity_check(entity: str, api_key: str) -> Tuple[bool, str]:
+    """Test Anthropic API"""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=50,
+            messages=[{"role": "user", "content": f"In one sentence, say what {entity} is."}]
+        )
+        
+        text = response.content[0].text.strip()
+        return True, f"Claude OK · '{text[:120]}'"
+        
+    except Exception as e:
+        error_details = f"{type(e).__name__}: {str(e)}"
+        return False, f"Anthropic error: {error_details}"
+
+def generate_realistic_simulation(entity: str, category: str, reason: str) -> Dict[str, Any]:
+    """Generate simulation with clear reasoning"""
+    import hashlib
+    import random
+    
+    # Consistent but varied scores
+    seed = int(hashlib.md5(entity.lower().encode()).hexdigest()[:8], 16)
+    random.seed(seed)
+    
+    # Entity-based scoring
+    entity_lower = entity.lower()
+    if any(term in entity_lower for term in ['tesla', 'apple', 'google', 'microsoft']):
+        base_score = random.randint(80, 95)
+    elif any(term in entity_lower for term in ['vuori', 'anthropic', 'openai']):
+        base_score = random.randint(65, 85)
+    else:
+        base_score = random.randint(40, 75)
+    
+    # Generate breakdown
+    variation = 15
+    breakdown = {
+        "recognition": max(0, min(100, base_score + random.randint(-variation, variation))),
+        "media": max(0, min(100, base_score + random.randint(-variation, variation))),
+        "context": max(0, min(100, base_score + random.randint(-variation, variation))),
+        "competitors": max(0, min(100, base_score + random.randint(-variation, variation))),
+        "consistency": max(0, min(100, base_score + random.randint(-10, 10)))
+    }
+    
+    return {
+        "ok": True,
+        "provider": "Simulation",
+        "simulated": True,
+        "result": {
+            "entity": entity,
+            "category": category,
+            "overall_score": base_score,
+            "breakdown": breakdown,
+            "notes": f"SIMULATION: {reason}. Add valid API keys for real analysis.",
+            "sources": ["simulation.demo", "mock.data"]
+        },
+        "note": f"Simulation because: {reason}"
+    }
 
 def main():
-    log.info("App starting up")
-    
     # Header
     st.markdown("""
     <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;">
-        <h1>🎯 LLM Visibility Analyzer</h1>
-        <p>Minimal Working Baseline - Always Functional</p>
+        <h1>🔍 LLM Visibility Analyzer</h1>
+        <p>Diagnostic Version - Find and Fix API Issues</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Provider status
-    provider_status = get_provider_status()
-    real_providers = sum(provider_status.values())
+    # Get configuration
+    api_keys = get_api_keys()
+    config = get_config()
     
-    if real_providers == 0 and SETTINGS.real_enabled:
-        st.warning("⚠️ No API keys configured. Running in simulation mode.")
-        st.info("Add your API keys to `.streamlit/secrets.toml` for real analysis.")
-    
-    # Main input
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        entity = st.text_input("Entity to analyze", placeholder="e.g., Patagonia, Snowflake, Messi")
-    with col2:
-        category = st.text_input("Category/Industry", placeholder="e.g., Outdoor, Tech, Sports", value="Technology")
-    
-    run_button = st.button("🚀 Analyze", type="primary", disabled=not entity)
-    
-    # Main analysis flow
-    if run_button and entity:
-        log.info(f"Starting analysis for {entity} in {category}")
+    # DIAGNOSTIC PANEL (always visible)
+    with st.expander("🔎 Diagnostics", expanded=True):
+        st.write("**API Key Status:**")
+        col1, col2, col3 = st.columns(3)
         
-        # State management
-        if "analysis_state" not in st.session_state:
-            st.session_state.analysis_state = "idle"
+        with col1:
+            st.write({
+                "OPENAI_API_KEY_present": bool(api_keys["openai"]),
+                "OPENAI_API_KEY_masked": mask(api_keys["openai"] or ""),
+            })
         
-        st.session_state.analysis_state = "fetching"
+        with col2:
+            st.write({
+                "ANTHROPIC_API_KEY_present": bool(api_keys["anthropic"]),
+                "ANTHROPIC_API_KEY_masked": mask(api_keys["anthropic"] or ""),
+            })
         
-        with st.spinner("🔍 Analyzing visibility across providers..."):
-            try:
-                # Call all providers
-                results = {}
-                
-                # OpenAI
-                if provider_status["openai"]:
-                    openai_result = call_openai_robust(entity, category)
-                    if openai_result["ok"]:
-                        results["OpenAI"] = openai_result
-                
-                # Anthropic
-                if provider_status["anthropic"]:
-                    anthropic_result = call_anthropic_robust(entity, category)
-                    if anthropic_result["ok"]:
-                        results["Anthropic"] = anthropic_result
-                
-                # Gemini
-                if provider_status["gemini"]:
-                    gemini_result = call_gemini_robust(entity, category)
-                    if gemini_result["ok"]:
-                        results["Gemini"] = gemini_result
-                
-                # Fallback to simulation if no real results
-                if not results and SETTINGS.simulation_fallback:
-                    log.info("Using simulation fallback")
-                    results = {
-                        "Simulation": {
-                            "ok": True,
-                            "data": {
-                                "facts": [f"{entity} operates in the {category} space"],
-                                "competitors": ["Competitor A", "Competitor B"],
-                                "detail_score": 0.6,
-                                "context_score": 0.7,
-                                "recognition_score": 0.75,
-                                "consistency_score": 0.8
-                            },
-                            "simulated": True
-                        }
-                    }
-                
-                if results:
-                    st.session_state.analysis_state = "scored"
-                    st.session_state.results = results
-                    log.info(f"Analysis completed with {len(results)} providers")
-                else:
-                    st.session_state.analysis_state = "error"
-                    st.error("❌ All providers failed. Check your configuration.")
-                    
-            except Exception as e:
-                log.exception(f"Analysis failed: {e}")
-                st.session_state.analysis_state = "error"
-                st.error(f"❌ Analysis failed: {str(e)}")
-    
-    # Render results based on state
-    if st.session_state.get("analysis_state") == "scored" and "results" in st.session_state:
-        st.success("✅ Analysis complete!")
+        with col3:
+            st.write({
+                "GEMINI_API_KEY_present": bool(api_keys["gemini"]),
+                "GEMINI_API_KEY_masked": mask(api_keys["gemini"] or ""),
+            })
         
-        results = st.session_state.results
-        
-        # Show provider results
-        st.subheader("📊 Provider Results")
-        for provider_name, result in results.items():
-            with st.expander(f"{provider_name} {'(Simulated)' if result.get('simulated') else ''}"):
-                if result["ok"]:
-                    data = result["data"]
-                    
-                    # Show facts and competitors
-                    if data.get("facts"):
-                        st.write("**Key Facts:**")
-                        for fact in data["facts"]:
-                            st.write(f"• {fact}")
-                    
-                    if data.get("competitors"):
-                        st.write("**Competitors:**")
-                        for comp in data["competitors"]:
-                            st.write(f"• {comp}")
-                    
-                    # Score the response
-                    scores = score(data)
-                    
-                    # Overall score highlight
-                    col1, col2, col3 = st.columns([1, 2, 1])
-                    with col2:
-                        st.metric(
-                            label="Overall Score",
-                            value=f"{scores['Overall']:.1f}",
-                            delta=f"{scores['Overall'] - 50:.1f}"
-                        )
-                    
-                    # Score breakdown chart
-                    st.plotly_chart(render_score_chart(scores), use_container_width=True)
-                    
-                    # Detailed scores table
-                    st.write("**Detailed Scores:**")
-                    score_df = pd.DataFrame([
-                        {"Metric": k, "Score": f"{v:.1f}"} for k, v in scores.items()
-                    ])
-                    st.dataframe(score_df, use_container_width=True)
-                    
-                    # Confidence indicator
-                    if result.get("simulated"):
-                        st.info("🎭 This result was simulated due to missing API keys or provider failure.")
-                    elif scores["Overall"] < 30:
-                        st.warning("⚠️ Low confidence: This entity may have limited visibility data.")
-                else:
-                    st.error(f"Provider failed: {result.get('error', 'Unknown error')}")
-    
-    elif st.session_state.get("analysis_state") == "error":
-        st.error("❌ Analysis encountered an error. Please try again.")
-    
-    elif st.session_state.get("analysis_state") == "fetching":
-        st.info("🔄 Analysis in progress...")
-    
-    else:
-        st.info("💡 Enter an entity and category above, then click Analyze to get started.")
-    
-    # Debug panel in sidebar
-    if st.sidebar.checkbox("🔧 Show debug info"):
-        st.sidebar.subheader("Debug Information")
-        st.sidebar.json({
-            "Provider Status": provider_status,
-            "Settings": {
-                "Real Analysis": SETTINGS.real_enabled,
-                "Simulation Fallback": SETTINGS.simulation_fallback,
-                "Request Timeout": SETTINGS.req_timeout,
-                "Max Tokens": SETTINGS.max_tokens
-            },
-            "Analysis State": st.session_state.get("analysis_state", "idle")
+        st.write("**Configuration:**")
+        st.write({
+            "REAL_ANALYSIS_ENABLED": config["real_enabled"],
+            "SIMULATION_FALLBACK": config["sim_fallback"],
+            "OPENAI_MODEL": config["openai_model"]
         })
+    
+    # API Sanity Tests
+    st.subheader("🧪 API Sanity Tests")
+    
+    test_entity = "Tesla"
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Test OpenAI Connection"):
+            if api_keys["openai"]:
+                with st.spinner("Testing OpenAI..."):
+                    ok, note = openai_sanity_check(test_entity, api_keys["openai"], config["openai_model"])
+                    if ok:
+                        st.success(f"✅ {note}")
+                    else:
+                        st.error(f"❌ {note}")
+            else:
+                st.error("❌ No OpenAI API key found")
+    
+    with col2:
+        if st.button("Test Anthropic Connection"):
+            if api_keys["anthropic"]:
+                with st.spinner("Testing Anthropic..."):
+                    ok, note = anthropic_sanity_check(test_entity, api_keys["anthropic"])
+                    if ok:
+                        st.success(f"✅ {note}")
+                    else:
+                        st.error(f"❌ {note}")
+            else:
+                st.error("❌ No Anthropic API key found")
+    
+    st.divider()
+    
+    # Main Analysis Interface
+    st.subheader("🎯 Visibility Analysis")
+    
+    entity = st.text_input(
+        "Enter entity to analyze",
+        placeholder="e.g., Tesla, Apple, Vuori",
+        value="Tesla"
+    )
+    
+    category = st.text_input(
+        "Category",
+        placeholder="e.g., automotive, technology",
+        value="general"
+    )
+    
+    # Provider selection
+    providers_to_test = []
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if api_keys["openai"] and st.checkbox("OpenAI", value=True):
+            providers_to_test.append("openai")
+    
+    with col2:
+        if api_keys["anthropic"] and st.checkbox("Anthropic", value=False):
+            providers_to_test.append("anthropic")
+    
+    with col3:
+        if api_keys["gemini"] and st.checkbox("Gemini", value=False):
+            providers_to_test.append("gemini")
+    
+    # Analysis button
+    if st.button("🚀 Run Full Analysis", type="primary"):
+        if not entity:
+            st.error("Please enter an entity")
+            return
         
-        if st.sidebar.button("Clear Session"):
-            st.session_state.clear()
-            st.rerun()
+        st.subheader("📊 Analysis Results")
+        
+        results = []
+        
+        # Test each provider
+        if "openai" in providers_to_test:
+            st.info("🤖 Testing OpenAI full analysis...")
+            
+            if not config["real_enabled"]:
+                result = generate_realistic_simulation(entity, category, "REAL_ANALYSIS_ENABLED=false")
+            elif not api_keys["openai"]:
+                result = generate_realistic_simulation(entity, category, "No OpenAI API key")
+            else:
+                result = openai_visibility_analysis(entity, category, api_keys["openai"], config["openai_model"])
+                
+                if not result["ok"] and config["sim_fallback"]:
+                    # Fallback to simulation
+                    result = generate_realistic_simulation(entity, category, result["note"])
+            
+            results.append(result)
+        
+        # Display results with full diagnostics
+        for result in results:
+            provider = result["provider"]
+            simulated = result.get("simulated", False)
+            
+            # Color code the provider name
+            if simulated:
+                provider_display = f"🎭 {provider} (SIMULATED)"
+                border_color = "#ffc107"  # Yellow for simulation
+            else:
+                provider_display = f"✅ {provider} (REAL)"
+                border_color = "#28a745"  # Green for real
+            
+            with st.container():
+                st.markdown(f"""
+                <div style="border: 3px solid {border_color}; border-radius: 10px; padding: 15px; margin: 10px 0;">
+                """, unsafe_allow_html=True)
+                
+                st.subheader(provider_display)
+                
+                # Show the diagnostic note prominently
+                if result.get("note"):
+                    if simulated:
+                        st.warning(f"⚠️ **Why Simulation?** {result['note']}")
+                    else:
+                        st.success(f"✅ **Status:** {result['note']}")
+                
+                # Show error details if available
+                if result.get("error"):
+                    st.error(f"**Error:** {result['error']}")
+                    
+                    if result.get("trace"):
+                        with st.expander("🔍 Error Traceback"):
+                            st.code(result["trace"])
+                
+                # Show results if available
+                if result.get("result"):
+                    analysis_result = result["result"]
+                    
+                    # Main score
+                    score = analysis_result["overall_score"]
+                    st.metric("Overall Visibility Score", f"{score}/100")
+                    
+                    # Check for the dreaded score 43
+                    if score == 43:
+                        st.error("🚨 **FOUND THE ISSUE!** Score 43 indicates fallback to default simulation values")
+                        st.error("This means your API calls are failing silently. Check the error details above.")
+                    
+                    # Breakdown
+                    breakdown = analysis_result.get("breakdown", {})
+                    if breakdown:
+                        st.write("**Breakdown Scores:**")
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        
+                        with col1:
+                            st.metric("Recognition", f"{breakdown.get('recognition', 0)}/100")
+                        with col2:
+                            st.metric("Media", f"{breakdown.get('media', 0)}/100")
+                        with col3:
+                            st.metric("Context", f"{breakdown.get('context', 0)}/100")
+                        with col4:
+                            st.metric("Competitors", f"{breakdown.get('competitors', 0)}/100")
+                        with col5:
+                            st.metric("Consistency", f"{breakdown.get('consistency', 0)}/100")
+                    
+                    # Notes and sources
+                    if analysis_result.get("notes"):
+                        st.write(f"**📝 Notes:** {analysis_result['notes']}")
+                    
+                    if analysis_result.get("sources"):
+                        st.write(f"**🔗 Sources:** {', '.join(analysis_result['sources'])}")
+                    
+                    # Raw JSON
+                    with st.expander("🔍 Raw JSON Response"):
+                        st.json(analysis_result)
+                
+                st.markdown("</div>", unsafe_allow_html=True)
+        
+        # Summary and next steps
+        if results:
+            st.subheader("🔧 Next Steps")
+            
+            simulated_count = sum(1 for r in results if r.get("simulated", False))
+            real_count = len(results) - simulated_count
+            
+            if simulated_count > 0:
+                st.warning(f"⚠️ {simulated_count} provider(s) fell back to simulation")
+                st.write("**To fix simulation fallbacks:**")
+                st.write("1. Check the error messages above for specific API issues")
+                st.write("2. Verify your API keys are correct and have sufficient credits")
+                st.write("3. Ensure the model names are accessible to your account")
+                st.write("4. Check for rate limiting or permission issues")
+            
+            if real_count > 0:
+                st.success(f"✅ {real_count} provider(s) working correctly with real API calls")
 
 if __name__ == "__main__":
     main() 
